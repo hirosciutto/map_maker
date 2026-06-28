@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Blockland Map Maker</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app">
+    <main class="workspace">
+      <div class="topbar">
+        <div class="brand">
+          <strong>Blockland Map Maker</strong>
+          <span id="mapInfo">未作成</span>
+        </div>
+        <div class="top-actions">
+          <button id="undoBtn" type="button">Undo</button>
+          <button id="redoBtn" type="button">Redo</button>
+          <button id="fitBtn" type="button">Fit</button>
+        </div>
+      </div>
+      <div id="canvasWrap" class="canvas-wrap">
+        <canvas id="mapCanvas" width="1024" height="1024"></canvas>
+        <canvas id="guideCanvas" width="1024" height="1024"></canvas>
+        <div id="brushCursor" class="brush-cursor" hidden></div>
+      </div>
+      <div class="statusbar">
+        <span id="cursorInfo">x:- y:-</span>
+        <span id="selectedInfo">選択: -</span>
+        <span id="message"></span>
+      </div>
+    </main>
+
+    <aside class="sidebar">
+      <div class="tabs">
+        <button class="tab active" data-tab="palette" type="button">パレット</button>
+        <button class="tab" data-tab="file" type="button">ファイル</button>
+        <button class="tab" data-tab="tools" type="button">ツール</button>
+      </div>
+
+      <section id="paletteTab" class="panel active">
+        <h2>バイオーム</h2>
+        <p class="hint">チェックONでハイライト。マスクONの色は塗り替え不可。</p>
+        <div class="palette-actions">
+          <button id="clearHighlightBtn" type="button">ハイライト解除</button>
+          <button id="clearMaskBtn" type="button">マスク解除</button>
+          <button id="maskAllBtn" type="button">全マスク</button>
+        </div>
+        <div id="paletteList" class="palette-list"></div>
+        <div class="field" id="brushSizeField">
+          <label>ペンサイズ <span id="brushSizeLabel">1 (1×1)</span></label>
+          <div class="row brush-size-row">
+            <button class="brush-size-btn active" data-brush-size="1" type="button">1</button>
+            <button class="brush-size-btn" data-brush-size="4" type="button">4</button>
+            <button class="brush-size-btn" data-brush-size="12" type="button">12</button>
+            <button class="brush-size-btn" data-brush-size="21" type="button">21</button>
+          </div>
+          <p class="hint">4=2×2、12=4×4の角4マス削り、21=5×5の角4マス削り（クリック位置を中心）</p>
+        </div>
+      </section>
+
+      <section id="fileTab" class="panel">
+        <h2>ファイル</h2>
+        <div class="field">
+          <label>新規キャンバス</label>
+          <div class="row">
+            <button data-new-size="256" type="button">256×256</button>
+            <button data-new-size="512" type="button">512×512</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="importScale">読込時の拡大</label>
+          <select id="importScale">
+            <option value="1">そのまま</option>
+            <option value="2">2倍 (256→512)</option>
+            <option value="half">半分 (512→256)</option>
+          </select>
+          <p class="hint">2倍は各マスを 2×2 に複製します（最近傍拡大）。512キャンバスへ 256 データを載せる場合は「2倍」を選んでください。</p>
+        </div>
+        <div class="field">
+          <label for="importInput">画像/JSONを読み込み</label>
+          <input id="importInput" type="file" accept="image/png,image/jpeg,image/webp,application/json,.json">
+          <p class="hint">画像は各ピクセルを最も近い許可バイオーム色へ変換します。</p>
+        </div>
+        <div class="field">
+          <button id="loadCurrentBtn" type="button">現在の biome_map を読み込み</button>
+          <p class="hint">`../blockland/map/biome_map.json` を取得します。ブラウザ制約で失敗する場合はファイル選択してください。</p>
+        </div>
+        <div class="field">
+          <label>出力</label>
+          <div class="row">
+            <button id="exportPngBtn" type="button">PNG出力</button>
+            <button id="exportJsonBtn" type="button">JSON出力</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="toolsTab" class="panel">
+        <h2>描画</h2>
+        <div class="field">
+          <label for="toolSelect">ツール</label>
+          <select id="toolSelect">
+            <option value="paint">ペン</option>
+            <option value="fill">塗りつぶし</option>
+            <option value="picker">スポイト</option>
+            <option value="guide">ノイズガイド</option>
+            <option value="pan">移動</option>
+            <option value="select">矩形選択</option>
+          </select>
+          <p class="hint">矩形選択: ドラッグで範囲指定。⌘C コピー / ⌘V ペースト（Esc で選択解除）</p>
+        </div>
+        <div class="field">
+          <label for="zoomRange">ズーム <span id="zoomLabel">4x</span></label>
+          <input id="zoomRange" type="range" min="1" max="32" value="4">
+        </div>
+        <div class="field">
+          <label class="checkbox-label" for="showGridToggle">
+            <input id="showGridToggle" type="checkbox">
+            グリッド表示
+          </label>
+        </div>
+
+        <h2>ノイズ発生</h2>
+        <p class="hint">ノイズガイドでなぞった線の周辺に、選択中バイオームを不規則に描き込みます。マスク色は侵食しません。</p>
+        <div class="field">
+          <label for="noiseRadius">半径 <span id="noiseRadiusLabel">3</span></label>
+          <input id="noiseRadius" type="range" min="1" max="16" value="3">
+        </div>
+        <div class="field">
+          <label for="noiseDensity">密度 <span id="noiseDensityLabel">60%</span></label>
+          <input id="noiseDensity" type="range" min="5" max="100" value="60">
+        </div>
+        <div class="field">
+          <label for="noiseJitter">揺らぎ <span id="noiseJitterLabel">4</span></label>
+          <input id="noiseJitter" type="range" min="0" max="16" value="4">
+        </div>
+        <div class="row">
+          <button id="applyNoiseBtn" type="button">ノイズ実行</button>
+          <button id="clearGuideBtn" type="button">ガイド消去</button>
+        </div>
+
+        <h2>バイオーム置換</h2>
+        <p class="hint">ルールを上から順に一斉適用します。「面する」は上下左右の隣接を指します。マスク中のマスは置換されません。</p>
+        <div id="replaceRulesList" class="replace-rules-list"></div>
+        <div class="row">
+          <button id="addReplaceRuleBtn" type="button">ルール追加</button>
+          <button id="previewReplaceRulesBtn" type="button">プレビュー</button>
+          <button id="clearReplacePreviewBtn" type="button">解除</button>
+          <button id="runReplaceRulesBtn" type="button">一斉置換</button>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
