@@ -1,4 +1,4 @@
-export const PEN_BRUSH_SIZES = [1, 4, 12, 21];
+export const PEN_BRUSH_SIZES = [1, 4, 12, 21, 32, 45];
 
 function buildSquareMinusCorners(size) {
   const cells = [];
@@ -39,6 +39,20 @@ export const BRUSH_SHAPES = {
     anchor: "center-bbox",
     label: "5×5角削り",
     cells: buildSquareMinusCorners(5),
+  },
+  32: {
+    width: 6,
+    height: 6,
+    anchor: "center-bbox",
+    label: "6×6角削り",
+    cells: buildSquareMinusCorners(6),
+  },
+  45: {
+    width: 7,
+    height: 7,
+    anchor: "center-bbox",
+    label: "7×7角削り",
+    cells: buildSquareMinusCorners(7),
   },
 };
 

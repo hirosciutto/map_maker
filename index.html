@@ -18,6 +18,10 @@
           <button id="undoBtn" type="button">Undo</button>
           <button id="redoBtn" type="button">Redo</button>
           <button id="fitBtn" type="button">Fit</button>
+          <div id="selectionConfirmActions" class="selection-confirm-actions" hidden>
+            <button id="selectionCancelBtn" class="selection-cancel-btn" type="button" title="キャンセル" aria-label="変形をキャンセル">×</button>
+            <button id="selectionConfirmBtn" class="selection-confirm-btn" type="button" title="確定" aria-label="変形を確定">○</button>
+          </div>
         </div>
       </div>
       <div id="canvasWrap" class="canvas-wrap">
@@ -40,14 +44,87 @@
       </div>
 
       <section id="paletteTab" class="panel active">
-        <h2>バイオーム</h2>
-        <p class="hint">チェックONでハイライト。マスクONの色は塗り替え不可。</p>
+        <h2 id="paletteHeading">バイオーム</h2>
+        <div class="layer-switch" role="radiogroup" aria-label="編集レイヤー">
+          <button id="layerBiomeBtn" class="layer-btn active" type="button">レイヤー1: バイオーム</button>
+          <button id="layerZoneBtn" class="layer-btn" type="button">レイヤー2: 地理圏</button>
+        </div>
+        <label id="zoneTransRow" class="cov-toggle" hidden><input id="zoneTransToggle" type="checkbox"> レイヤー1(バイオーム)を透かして表示</label>
+        <div id="zoneFilterRow" class="zone-filter" hidden>
+          <label for="zoneBiomeFilter">限定塗り(このバイオームだけ):</label>
+          <select id="zoneBiomeFilter"></select>
+        </div>
+        <p class="hint" id="paletteHint">チェックONでハイライト。マスクONの色は塗り替え不可。</p>
+        <div id="coveragePanel" class="coverage-panel" hidden>
+          <div class="row">
+            <button id="coverageCheckBtn" type="button">被覆チェック</button>
+            <button id="coverageFixBtn" type="button" disabled>近傍zoneで自動修正</button>
+          </div>
+          <label class="cov-toggle"><input id="coverageShowToggle" type="checkbox"> デッド(赤)・未塗り(橙)を表示</label>
+          <div id="coverageResult" class="cov-result"></div>
+          <p class="hint">動物が1種も出現しない陸ピクセルを検出。自動修正はその zone を最寄りの出現可能 zone へ塗替(Undo可)。</p>
+        </div>
         <div class="palette-actions">
           <button id="clearHighlightBtn" type="button">ハイライト解除</button>
           <button id="clearMaskBtn" type="button">マスク解除</button>
           <button id="maskAllBtn" type="button">全マスク</button>
         </div>
         <div id="paletteList" class="palette-list"></div>
+        <div class="field" id="toolField">
+          <label>描画ツール</label>
+          <div class="tool-picker" role="radiogroup" aria-label="描画ツール">
+            <label class="tool-option" title="ペン">
+              <input type="radio" name="tool" value="paint" checked>
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </span>
+              <span class="tool-label">ペン</span>
+            </label>
+            <label class="tool-option" title="塗りつぶし">
+              <input type="radio" name="tool" value="fill">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2a2 2 0 0 0 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h3"/><path d="M2 17h3"/></svg>
+              </span>
+              <span class="tool-label">塗り</span>
+            </label>
+            <label class="tool-option" title="スポイト">
+              <input type="radio" name="tool" value="picker">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 2 6 6"/><path d="m8 10 8.5 8.5a2.1 2.1 0 0 1 3 3L9 22l-7-7 4.5-10.5a2.1 2.1 0 0 1 3 3L8 10Z"/></svg>
+              </span>
+              <span class="tool-label">スポイト</span>
+            </label>
+            <label class="tool-option" title="投げ縄選択">
+              <input type="radio" name="tool" value="select">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4c4 6 6 10 8 16"/><path d="M12 20c2-4 4-8 8-12"/><circle cx="4" cy="4" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="20" r="1.5" fill="currentColor" stroke="none"/></svg>
+              </span>
+              <span class="tool-label">投げ縄</span>
+            </label>
+            <label class="tool-option" title="範囲切り取り">
+              <input type="radio" name="tool" value="crop">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v4H2"/><path d="M18 22v-4h4"/><path d="M6 6h10v10"/><path d="M8 18h10V8"/></svg>
+              </span>
+              <span class="tool-label">切取</span>
+            </label>
+            <label class="tool-option" title="ノイズガイド">
+              <input type="radio" name="tool" value="guide">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18c3-8 5-8 8-12 2 3 4 3 8 0"/></svg>
+              </span>
+              <span class="tool-label">ガイド</span>
+            </label>
+            <label class="tool-option" title="移動">
+              <input type="radio" name="tool" value="pan">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V5a2 2 0 0 0-4 0v8"/><path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2a8 8 0 0 1-8-8v-4"/></svg>
+              </span>
+              <span class="tool-label">移動</span>
+            </label>
+          </div>
+          <p class="hint">投げ縄は選択・変形用。切取は矩形ドラッグで残す範囲を指定し、○でキャンバス化、×でキャンセル。</p>
+        </div>
         <div class="field" id="brushSizeField">
           <label>ペンサイズ <span id="brushSizeLabel">1 (1×1)</span></label>
           <div class="row brush-size-row">
@@ -55,6 +132,8 @@
             <button class="brush-size-btn" data-brush-size="4" type="button">4</button>
             <button class="brush-size-btn" data-brush-size="12" type="button">12</button>
             <button class="brush-size-btn" data-brush-size="21" type="button">21</button>
+            <button class="brush-size-btn" data-brush-size="32" type="button">32</button>
+            <button class="brush-size-btn" data-brush-size="45" type="button">45</button>
           </div>
           <p class="hint">4=2×2、12=4×4の角4マス削り、21=5×5の角4マス削り（クリック位置を中心）</p>
         </div>
@@ -65,27 +144,72 @@
         <div class="field">
           <label>新規キャンバス</label>
           <div class="row">
-            <button data-new-size="256" type="button">256×256</button>
-            <button data-new-size="512" type="button">512×512</button>
+            <button data-new-width="256" data-new-height="256" type="button">256×256</button>
+            <button data-new-width="512" data-new-height="512" type="button">512×512</button>
           </div>
+          <div class="row">
+            <button data-new-width="384" data-new-height="256" type="button">384×256</button>
+            <button data-new-width="768" data-new-height="512" type="button">768×512</button>
+          </div>
+          <p class="hint">表記は横×縦です。384×256・768×512 は横長キャンバスです。</p>
         </div>
         <div class="field">
           <label for="importScale">読込時の拡大</label>
           <select id="importScale">
             <option value="1">そのまま</option>
-            <option value="2">2倍 (256→512)</option>
-            <option value="half">半分 (512→256)</option>
+            <option value="2">2倍（各マスを 2×2 に複製）</option>
+            <option value="half">半分（偶数サイズのみ）</option>
           </select>
-          <p class="hint">2倍は各マスを 2×2 に複製します（最近傍拡大）。512キャンバスへ 256 データを載せる場合は「2倍」を選んでください。</p>
+          <p class="hint">任意サイズの画像/JSONを読み込めます。2倍は最近傍拡大、半分は幅・高さが偶数のときのみ使えます。</p>
         </div>
         <div class="field">
           <label for="importInput">画像/JSONを読み込み</label>
           <input id="importInput" type="file" accept="image/png,image/jpeg,image/webp,application/json,.json">
-          <p class="hint">画像は各ピクセルを最も近い許可バイオーム色へ変換します。</p>
+          <p class="hint">画像は各ピクセルを最も近い許可バイオーム色へ変換します。サイズ制限はありません。</p>
         </div>
         <div class="field">
-          <button id="loadCurrentBtn" type="button">現在の biome_map を読み込み</button>
-          <p class="hint">`../blockland/map/biome_map.json` を取得します。ブラウザ制約で失敗する場合はファイル選択してください。</p>
+          <label>キャンバスサイズ</label>
+          <p class="size-current">現在 <strong id="canvasSizeCurrent">256×256</strong></p>
+          <div class="size-edit-row">
+            <label class="size-dim" for="canvasWidthInput">
+              <span>横</span>
+              <input id="canvasWidthInput" type="number" min="1" step="1" value="256">
+            </label>
+            <button
+              id="aspectLockBtn"
+              class="aspect-lock-btn"
+              type="button"
+              aria-pressed="false"
+              title="縦横比を固定"
+              aria-label="縦横比ロック"
+            >
+              <svg class="lock-icon lock-closed" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M17 8h-1V6a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm-7-2a2 2 0 1 1 4 0v2h-4V6zm7 14H7V10h10v10z"/>
+              </svg>
+              <svg class="lock-icon lock-open" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M17 8h-1V6a4 4 0 0 0-7.5-2 1 1 0 1 0 1.7 1A2 2 0 0 1 14 6v2H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm0 12H7V10h10v10z"/>
+              </svg>
+            </button>
+            <label class="size-dim" for="canvasHeightInput">
+              <span>縦</span>
+              <input id="canvasHeightInput" type="number" min="1" step="1" value="256">
+            </label>
+            <button id="applyCanvasSizeBtn" type="button">サイズを適用</button>
+          </div>
+          <fieldset class="size-mode-field">
+            <legend>変更方法</legend>
+            <label class="size-mode-option">
+              <input type="radio" name="canvasSizeMode" value="stretch" checked>
+              <span>伸縮</span>
+              <small>内容を伸ばす／縮める</small>
+            </label>
+            <label class="size-mode-option">
+              <input type="radio" name="canvasSizeMode" value="canvas">
+              <span>切り取り／海余白</span>
+              <small>縮小は中央切り取り、拡大は周囲に海を追加</small>
+            </label>
+          </fieldset>
+          <p class="hint">南京錠で縦横比を固定できます。</p>
         </div>
         <div class="field">
           <label>出力</label>
@@ -94,22 +218,36 @@
             <button id="exportJsonBtn" type="button">JSON出力</button>
           </div>
         </div>
+        <div class="field">
+          <label>地理圏レイヤー(zone_map)</label>
+          <div class="row">
+            <button id="exportZoneJsonBtn" type="button">zone_map出力</button>
+            <label class="file-btn" for="importZoneInput">zone_map読込</label>
+            <input id="importZoneInput" type="file" accept="application/json,.json" hidden>
+          </div>
+          <p class="hint">陸を30圏で塗り→出力(海は自動割当)。未塗り陸があると出力エラー。</p>
+        </div>
+        <div class="field">
+          <label>プロジェクト保存(レイヤー1+2セット)</label>
+          <p class="size-current">現在 <strong id="blmapPathInfo">未設定</strong></p>
+          <div class="row">
+            <button id="exportMapSetBtn" type="button">.blmap で保存</button>
+            <button id="exportMapSetAsBtn" type="button">別名で保存</button>
+            <button id="importMapSetBtn" type="button">.blmap を読込</button>
+            <input id="importMapSetInput" type="file" accept=".blmap,application/json" hidden>
+          </div>
+          <p class="hint">バイオーム(レイヤー1)と地理圏(レイヤー2)を1ファイルに。読込/保存したパスを覚え、次回は同じファイルへ上書きします（Chrome / Edge など）。</p>
+        </div>
+        <div class="field">
+          <label>マップのクリア</label>
+          <div class="row">
+            <button id="clearMapBtn" class="danger-btn" type="button">現在のマップをクリア</button>
+          </div>
+          <p class="hint warn-hint">マップ全体を海で埋めます。サイズは変わりません。実行前に確認ダイアログが出ます。</p>
+        </div>
       </section>
 
       <section id="toolsTab" class="panel">
-        <h2>描画</h2>
-        <div class="field">
-          <label for="toolSelect">ツール</label>
-          <select id="toolSelect">
-            <option value="paint">ペン</option>
-            <option value="fill">塗りつぶし</option>
-            <option value="picker">スポイト</option>
-            <option value="guide">ノイズガイド</option>
-            <option value="pan">移動</option>
-            <option value="select">矩形選択</option>
-          </select>
-          <p class="hint">矩形選択: ドラッグで範囲指定。⌘C コピー / ⌘V ペースト（Esc で選択解除）</p>
-        </div>
         <div class="field">
           <label for="zoomRange">ズーム <span id="zoomLabel">4x</span></label>
           <input id="zoomRange" type="range" min="1" max="32" value="4">
@@ -141,7 +279,7 @@
         </div>
 
         <h2>バイオーム置換</h2>
-        <p class="hint">ルールを上から順に一斉適用します。「面する」は上下左右の隣接を指します。マスク中のマスは置換されません。</p>
+        <p class="hint">ルールを上から順に一斉適用します。「面する」は上下左右の隣接を指します。対象・条件は個別バイオームのほか、配色ファミリー単位や「陸地全て」も選べます。マスク中のマスは置換されません。</p>
         <div id="replaceRulesList" class="replace-rules-list"></div>
         <div class="row">
           <button id="addReplaceRuleBtn" type="button">ルール追加</button>

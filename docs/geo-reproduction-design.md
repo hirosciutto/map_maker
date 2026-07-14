@@ -243,7 +243,7 @@ height(cell) = elevation(biome)
 - **中国西部（タリム・四川・雲貴）**: タリム盆地 `desert`(タクラマカン)/`cold_desert` ＋ 四川盆地 `wetland`＋周囲 `cloud_forest`/`mountain` ＋ 雲貴高原 `plateau`/`cloud_forest`。
 - **インド亜大陸**: ガンジス平野 低地 `dry_forest`(300)/`wetland` ＋ デカン高原 `steppe`/`monsoon_upland`(800) ＋ タール `desert` ＋ 西ガーツ/北東 `rainforest`→`montane_rainforest`(1400)/`cloud_forest`。
 - **東南アジア大陸部（インドシナ）**: モンスーン林 `dry_forest`/`rainforest` ＋ アンナン山脈 `mountain`/`cloud_forest` ＋ メコン/エーヤワディー デルタ `wetland`/`mangrove`。
-- **東南アジア島嶼部（インドネシア・フィリピン）**: `rainforest`(100)→`montane_rainforest`(1400)→`cloud_forest`(2000) ＋ 海岸 `mangrove`(0) ＋ 火山列 `volcano`(3000級) ＋ 島嶼海 `shelf_sea`/`tropic_isle`。
+- **東南アジア島嶼部（インドネシア・フィリピン）**: `rainforest`(100)→`montane_rainforest`(1400)→`cloud_forest`(2000) ＋ 海岸 `mangrove`(0) ＋ 火山列 `volcano`(3000級) ＋ 島嶼海 `shelf_sea` ＋ 海岸 `beach`。
 - **朝鮮半島**: 温帯林 ＋ 山地 `mountain`（白頭山 `volcano` 2744） ＋ 西岸 `wetland`/干潟。
 - **日本**: 温帯林 ＋ 山地 `mountain` ＋ 富士 `volcano`(3776) ＋ 北海道 `taiga` ＋ 沖縄 `rainforest`/`mangrove`。
 
@@ -294,7 +294,7 @@ height(cell) = elevation(biome)
 
 - **メキシコ**: 北部 `desert`（ソノラ/チワワ） ＋ メキシコ高原 `highland_steppe`/`dry_plateau` ＋ 火山帯 `volcano`（オリサバ5636） ＋ 南部 `rainforest`。
 - **中央アメリカ地峡**: `rainforest`/`cloud_forest` ＋ 火山列 `volcano` ＋ 海岸 `mangrove`。
-- **カリブ諸島**: `tropic_isle`/`rainforest` ＋ サンゴ礁 `shelf_sea`/`beach` ＋ 火山島 `volcano`。
+- **カリブ諸島**: `rainforest` ＋ サンゴ礁 `shelf_sea`/`beach` ＋ 火山島 `volcano`。
 
 ### 南アメリカ
 
@@ -310,7 +310,7 @@ height(cell) = elevation(biome)
 
 - **オーストラリア**: 内陸アウトバック `desert`(赤砂漠) ＋ 北部モンスーン帯 `savanna`/`thorn_scrub` ＋ 大分水嶺山脈 `mountain`(コジオスコ2228)＋温帯林 ＋ 南部・南西部 地中海性 `shrubland` ＋ 北岸 `mangrove` ＋ グレートバリアリーフ沿岸 `shelf_sea`。
 - **ニュージーランド**: 温帯雨林（フィヨルドランド `cloud_forest`/温帯林） ＋ サザンアルプス `mountain`→`glacier`（アオラキ/クック3724） ＋ 北島 `volcano`(ルアペフ2797)。
-- **太平洋諸島・ニューギニア**: 火山島 `volcano`/`tropic_isle` ＋ 環礁・サンゴ礁 `shelf_sea`/`beach`/`mangrove` ＋ 低地 `rainforest` ＋ ニューギニア高地 `cloud_forest`→`high_mountain`→`permanent_snow`（プンチャック・ジャヤ4884、赤道直下の氷河）。
+- **太平洋諸島・ニューギニア**: 火山島 `volcano` ＋ 環礁・サンゴ礁 `shelf_sea`/`beach`/`mangrove` ＋ 低地 `rainforest` ＋ ニューギニア高地 `cloud_forest`→`high_mountain`→`permanent_snow`（プンチャック・ジャヤ4884、赤道直下の氷河）。
 
 ### 極地
 
@@ -462,7 +462,7 @@ height(cell) = elevation(biome)
 
 ---
 
-## 付録A: 確定バイオーム一覧（モデルA・63種・標高昇順）
+## 付録A: 確定バイオーム一覧（モデルA・62種・標高昇順。`ISL` 南国の島は 2026-07-14 オーナー決定で廃止）
 
 全バイオームが絶対標高を持つモデルA。標高昇順。コードは固定3文字・大文字ニーモニック（§7.1）で確定。「旧」列は現行1文字コードとの対応（＝旧マップ移行の変換辞書。新規は —）。気温 寒/温/暑、湿度 乾/中/湿。状態 ◯=実装済み / ＋=新規。color は [app.js](../app.js) `BIOMES` のパレット色。
 
@@ -475,7 +475,6 @@ height(cell) = elevation(biome)
 | 0 | `OCN` | O | 海 (ocean) | coastal | 温 | 湿 | flat | `#3270ae` | ◯ |
 | 0 | `MNG` | — | マングローブ (mangrove) | coastal | 暑 | 湿 | flat | `#356e65` | ＋ |
 | 5 | `BCH` | B | 浜 (beach) | coastal | 温 | 湿 | flat | `#ffe1b2` | ◯ |
-| 20 | `ISL` | N | 南国の島 (tropic_isle) | coastal | 暑 | 湿 | rolling | `#ebe547` | ◯ |
 | 50 | `TWN` | T | セントラルシティ (town) | hub | 温 | 中 | flat | `#808080` | ◯ |
 | 50 | `WET` | W | 湿地 (wetland) | wetland | 温 | 湿 | flat | `#38756b` | ◯ |
 | 100 | `PLN` | P | 平原 (plains) | grassland | 温 | 中 | flat | `#527e25` | ◯ |
@@ -532,4 +531,4 @@ height(cell) = elevation(biome)
 | 6800 | `XPK` | — | 超高山峰 (extreme_peak) | alpine | 寒 | 乾 | peak | `#e4e6e7` | ＋ |
 | 8500 | `HIM` | — | 極高山・ヒマラヤ (himalaya) | alpine | 寒 | 乾 | peak | `#f4f5f5` | ＋ |
 
-**内訳**: 全63種（既存 ◯30 ＋ 新規 ＋33、うち任意 ＋2＝海面下盆地 `DEP`・塩原 `SLT`）。うち中間バンドの穴埋め12種（A8＝`MFR`/`IFD`/`SST`/`CDM`/`ARK`/`CDH`/`HRK`/`HGL`、B4＝`DRU`/`SVH`/`RFM`/`AFF`。§5）。標高レンジ −8000m〜+8500m。最上位 `HIM`(8500) が全球最大アンカーのため、特別処理なしにヒマラヤが世界最高になる（原則3）。標高同値の行（例 100m の `PLN`/`JGL`/`PLR`、3500m の `SNM`/`IDM`）は気温・湿度・relief で塗り分ける。全63コードは一意。
+**内訳**: 全62種（既存 ◯30 ＋ 新規 ＋33 − `ISL`廃止1、うち任意 ＋2＝海面下盆地 `DEP`・塩原 `SLT`）。うち中間バンドの穴埋め12種（A8＝`MFR`/`IFD`/`SST`/`CDM`/`ARK`/`CDH`/`HRK`/`HGL`、B4＝`DRU`/`SVH`/`RFM`/`AFF`。§5）。標高レンジ −8000m〜+8500m。最上位 `HIM`(8500) が全球最大アンカーのため、特別処理なしにヒマラヤが世界最高になる（原則3）。標高同値の行（例 100m の `PLN`/`JGL`/`PLR`、3500m の `SNM`/`IDM`）は気温・湿度・relief で塗り分ける。全63コードは一意。

@@ -5,18 +5,18 @@ Blockland の `biome_map` を手作業で編集するための静的Webツール
 ## 起動
 
 ```bash
-cd /Users/nakashima/works
+cd /Users/nakashima/works/map_maker
 python3 -m http.server 5173
 ```
 
-ブラウザで `http://localhost:5173/map_maker/` を開きます。
+ブラウザで `http://localhost:5173/` を開きます。
 
 ## できること
 
-- `256×256` / `512×512` の新規マップ作成
+- `256×256` / `384×256` / `512×512` / `768×512` の新規マップ作成
 - PNG/JPEG/WebP画像の読み込み
   - 読み込んだ各ピクセルは、必ず許可済みバイオーム色の最近傍へ量子化されます
-- `biome_map.json` の読み込み
+- `biome_map.json` の読み込み（ファイル選択）
 - 許可済みバイオーム色だけでのペイント
 - パレット左チェックによるバイオームハイライト
 - パレット中央チェックによるバイオームマスク
@@ -26,18 +26,14 @@ python3 -m http.server 5173
   - `ノイズ実行` で、選択中バイオームをガイド周辺へ不規則に描き込み
   - マスクしたバイオームは侵食されません
 - PNG / JSON 出力
+- バイオーム置換
+  - 置換先に `面したバイオーム` を選ぶと、対象マスの上下左右にある「対象マス自身とは異なるバイオーム」からランダムで1つを選んで置換します
+  - このモードでは、上下左右に別バイオームが存在しないマスは置換対象になりません
 
 ## バイオーム制約
 
-パレットは `blockland/tools/generate_macro_map.py` の `LEGEND` と同じ色・コードを固定で持っています。`A 高原` / `Q 乾燥高原` も使用できます。
-ツール内部のグリッドはバイオームコードで保持され、任意色は保存できません。
+./docs/geo-reproduction-design.md を参照してください。
 
-## 現在の `biome_map` を読み込む
+## biome_map.json の読み込み
 
-`ファイル > 現在の biome_map を読み込み` を押してください。
-上記のように `/Users/nakashima/works` をHTTP配信している場合、`../blockland/map/biome_map.json` を自動取得できます。
-別の起動方法で失敗する場合は、手動で以下を選択してください。
-
-```text
-/Users/nakashima/works/blockland/map/biome_map.json
-```
+`ファイル > 画像/JSONを読み込み` から `biome_map.json` を選択してください。

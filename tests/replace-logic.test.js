@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import {
+  ADJACENT_REPLACE_TARGET,
+  LAND_SELECTOR,
+  adjacentReplacementCandidates,
   cellMatchesReplaceRule,
+  cellMatchesSelector,
+  chooseAdjacentReplacement,
   collectReplacePreviewCells,
   getReplaceTargetsForRule,
   hasAdjacentBiome,
   cellKeysToCoords,
+  makeFamilySelector,
 } from "../replace-logic.js";
 
 function gridFromRows(rows) {
@@ -166,6 +172,78 @@ test("プレビュー: getReplaceTargetsForRule の union と完全一致", () =
   }
   assert.deepEqual(cellKeysToCoords(fromPreview), cellKeysToCoords(fromTargets));
   assert.deepEqual(cellKeysToCoords(fromPreview), [[1, 1], [1, 2]]);
+});
+
+test("面したバイオーム置換: 対象自身以外の上下左右候補だけを返す", () => {
+  const grid = gridFromRows([
+    "POF",
+    "PBJ",
+    "PDP",
+  ]);
+  assert.deepEqual(adjacentReplacementCandidates(1, 1, grid, 3), ["O", "D", "P", "J"]);
+});
+
+test("面したバイオーム置換: 同一バイオームだけに囲まれた対象は置換対象外", () => {
+  const rule = { mode: "always", adjacent: "O", from: "B", to: ADJACENT_REPLACE_TARGET };
+  const isolated = gridFromRows([
+    "PPP",
+    "PBP",
+    "PPP",
+  ]);
+  const sameBiome = gridFromRows([
+    "BBB",
+    "BBB",
+    "BBB",
+  ]);
+  assert.equal(cellMatchesReplaceRule(1, 1, rule, isolated, 3), true);
+  assert.equal(cellMatchesReplaceRule(1, 1, rule, sameBiome, 3), false);
+  assert.deepEqual(getReplaceTargetsForRule(rule, sameBiome, 3, alwaysPaintable), []);
+});
+
+test("面したバイオーム置換: 候補の中からランダムで選ぶ", () => {
+  const grid = gridFromRows([
+    "BOB",
+    "BBB",
+    "BDB",
+  ]);
+  assert.equal(chooseAdjacentReplacement(1, 1, grid, 3, () => 0), "O");
+  assert.equal(chooseAdjacentReplacement(1, 1, grid, 3, () => 0.99), "D");
+});
+
+test("陸地全て / ファミリー選択子でマッチする", () => {
+  const context = {
+    familyCodes: new Map([
+      ["grass", new Set(["P", "M"])],
+      ["ocean_deep", new Set(["O"])],
+    ]),
+    landCodes: new Set(["P", "M", "B"]),
+  };
+  assert.equal(cellMatchesSelector("P", LAND_SELECTOR, context), true);
+  assert.equal(cellMatchesSelector("O", LAND_SELECTOR, context), false);
+  assert.equal(cellMatchesSelector("P", makeFamilySelector("grass"), context), true);
+  assert.equal(cellMatchesSelector("B", makeFamilySelector("grass"), context), false);
+
+  const grid = [
+    ["O", "O", "O"],
+    ["O", "P", "B"],
+    ["O", "M", "O"],
+  ];
+  const landRule = { mode: "always", adjacent: "O", from: LAND_SELECTOR, to: "B" };
+  const targets = getReplaceTargetsForRule(landRule, grid, 3, alwaysPaintable, context);
+  assert.deepEqual(targets, [
+    { x: 1, y: 1 },
+    { x: 2, y: 1 },
+    { x: 1, y: 2 },
+  ]);
+
+  const familyTouch = {
+    mode: "touching",
+    adjacent: makeFamilySelector("ocean_deep"),
+    from: makeFamilySelector("grass"),
+    to: "B",
+  };
+  assert.equal(cellMatchesReplaceRule(1, 1, familyTouch, grid, 3, context), true);
+  assert.equal(cellMatchesReplaceRule(2, 1, familyTouch, grid, 3, context), false);
 });
 
 console.log("replace-logic: all tests passed");
