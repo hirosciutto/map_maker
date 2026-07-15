@@ -267,6 +267,11 @@ function ensureZoneGrid() {
 
 const AUTOSAVE_KEY = "blockland-map-maker-autosave";
 const AUTOSAVE_VERSION = 2;
+const APP_IDB_NAME = "blockland-map-maker-files";
+const APP_IDB_VERSION = 2;
+const BLMAP_IDB_STORE = "handles";
+const AUTOSAVE_IDB_STORE = "autosave";
+const AUTOSAVE_IDB_KEY = "current";
 const EYEDROPPER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path fill="#fff" stroke="#111" stroke-width="1.2" d="M2 18l2-2 9-9 2 2-9 9H2v-2zm12-11 1.4-1.4a1.4 1.4 0 0 1 2 2L15 9l-2-2z"/></svg>',
 )}") 2 18, crosshair`;
@@ -277,6 +282,10 @@ const REPLACE_MODES = [
 ];
 const TOOL_VALUES = new Set(["paint", "fill", "picker", "guide", "pan", "select", "crop"]);
 let autosaveTimer = null;
+let autosaveWriteChain = Promise.resolve();
+let mapImageData = null;
+let dirtyMapBounds = null;
+let dirtyMapFrame = null;
 
 const state = {
   width: 256,
@@ -569,27 +578,92 @@ function serializeAutosave() {
   };
 }
 
-function saveAutosave() {
+function openAppIdb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(APP_IDB_NAME, APP_IDB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(BLMAP_IDB_STORE)) {
+        db.createObjectStore(BLMAP_IDB_STORE);
+      }
+      if (!db.objectStoreNames.contains(AUTOSAVE_IDB_STORE)) {
+        db.createObjectStore(AUTOSAVE_IDB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(storeName, key) {
+  const db = await openAppIdb();
   try {
-    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(serializeAutosave()));
-    return true;
-  } catch (error) {
-    console.warn("autosave failed", error);
-    if (error instanceof DOMException && error.name === "QuotaExceededError") {
-      setMessage("オートセーブ失敗: 保存容量の上限に達しました");
-    }
-    return false;
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).get(key);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
   }
+}
+
+async function idbPut(storeName, key, value) {
+  const db = await openAppIdb();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readwrite");
+      tx.objectStore(storeName).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function idbDelete(storeName, key) {
+  const db = await openAppIdb();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readwrite");
+      tx.objectStore(storeName).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function saveAutosave() {
+  const data = serializeAutosave();
+  autosaveWriteChain = autosaveWriteChain.then(async () => {
+    try {
+      await idbPut(AUTOSAVE_IDB_STORE, AUTOSAVE_IDB_KEY, data);
+      return true;
+    } catch (error) {
+      console.warn("autosave failed", error);
+      if (error instanceof DOMException && error.name === "QuotaExceededError") {
+        setMessage("オートセーブ失敗: 保存容量の上限に達しました");
+      }
+      return false;
+    }
+  });
+  return autosaveWriteChain;
 }
 
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(saveAutosave, 400);
+  autosaveTimer = setTimeout(() => {
+    saveAutosave().catch((error) => console.warn("autosave failed", error));
+  }, 400);
 }
 
 function flushAutosave() {
   clearTimeout(autosaveTimer);
-  saveAutosave();
+  saveAutosave().catch((error) => console.warn("autosave failed", error));
 }
 
 function isLegacyJungleIsleLegend(legend) {
@@ -659,72 +733,85 @@ function sanitizeStateGrid() {
   );
 }
 
-function loadAutosave() {
-  try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
-    if (typeof data.version !== "number" || data.version > AUTOSAVE_VERSION) return false;
+function applyAutosaveData(data) {
+  if (typeof data.version !== "number" || data.version > AUTOSAVE_VERSION) return false;
 
-    const rows = data.rows;
-    if (!Array.isArray(rows) || rows.length === 0) return false;
-    let geometry = detectMapGeometry(rows);
-    let normalizedRows = geometry ? normalizeRows(rows, { geometry }) : null;
-    if (!normalizedRows) {
-      const recovered = tryRecoverMixedRows(rows, data);
-      if (!recovered) return false;
-      geometry = recovered.geometry;
-      normalizedRows = recovered.rows;
-    }
+  const rows = data.rows;
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+  let geometry = detectMapGeometry(rows);
+  let normalizedRows = geometry ? normalizeRows(rows, { geometry }) : null;
+  if (!normalizedRows) {
+    const recovered = tryRecoverMixedRows(rows, data);
+    if (!recovered) return false;
+    geometry = recovered.geometry;
+    normalizedRows = recovered.rows;
+  }
 
-    state.width = geometry.width;
-    state.height = geometry.height;
-    state.grid = rowsToGrid(normalizedRows);
-    sanitizeStateGrid();
-    state.zoneGrid = [];
-    ensureZoneGrid();
-    if (Array.isArray(data.zoneRows)) {
-      for (let y = 0; y < state.height; y++) {
-        const row = data.zoneRows[y];
-        if (typeof row !== "string") continue;
-        for (let x = 0; x < state.width; x++) {
-          const code = row.slice(x * 3, x * 3 + 3);
-          if (zoneByCode.has(code)) state.zoneGrid[y][x] = code;
-        }
+  state.width = geometry.width;
+  state.height = geometry.height;
+  state.grid = rowsToGrid(normalizedRows);
+  sanitizeStateGrid();
+  state.zoneGrid = [];
+  ensureZoneGrid();
+  if (Array.isArray(data.zoneRows)) {
+    for (let y = 0; y < state.height; y++) {
+      const row = data.zoneRows[y];
+      if (typeof row !== "string") continue;
+      for (let x = 0; x < state.width; x++) {
+        const code = row.slice(x * 3, x * 3 + 3);
+        if (zoneByCode.has(code)) state.zoneGrid[y][x] = code;
       }
     }
-    state.selectedZoneCode = zoneByCode.has(data.selectedZoneCode) ? data.selectedZoneCode : "NEW";
-    state.activeLayer = data.activeLayer === "zone" ? "zone" : "biome";
-    const selectedCode = migrateLegacyCode(data.selectedCode);
-    state.selectedCode = biomeByCode.has(selectedCode) ? selectedCode : "PLN";
-    state.highlight = new Set(
-      Array.isArray(data.highlight)
-        ? data.highlight.map((code) => migrateLegacyCode(code)).filter((code) => biomeByCode.has(code))
-        : [],
-    );
-    state.mask = new Set(
-      Array.isArray(data.mask)
-        ? data.mask.map((code) => migrateLegacyCode(code)).filter((code) => biomeByCode.has(code))
-        : [],
-    );
-    state.zoom = typeof data.zoom === "number" ? Math.min(32, Math.max(1, data.zoom)) : 4;
-    state.brushSize = normalizeBrushSize(data.brushSize);
-    state.tool = TOOL_VALUES.has(data.tool) ? data.tool : "paint";
-    state.guidePoints = Array.isArray(data.guidePoints) ? data.guidePoints : [];
-    state.showGrid = Boolean(data.showGrid);
-    state.replaceRules = Array.isArray(data.replaceRules)
-      ? data.replaceRules.map(normalizeReplaceRule).filter(Boolean)
-      : [];
-    state.undoStack = [];
-    state.redoStack = [];
-    state.replacePreviewActive = false;
+  }
+  state.selectedZoneCode = zoneByCode.has(data.selectedZoneCode) ? data.selectedZoneCode : "NEW";
+  state.activeLayer = data.activeLayer === "zone" ? "zone" : "biome";
+  const selectedCode = migrateLegacyCode(data.selectedCode);
+  state.selectedCode = biomeByCode.has(selectedCode) ? selectedCode : "PLN";
+  state.highlight = new Set(
+    Array.isArray(data.highlight)
+      ? data.highlight.map((code) => migrateLegacyCode(code)).filter((code) => biomeByCode.has(code))
+      : [],
+  );
+  state.mask = new Set(
+    Array.isArray(data.mask)
+      ? data.mask.map((code) => migrateLegacyCode(code)).filter((code) => biomeByCode.has(code))
+      : [],
+  );
+  state.zoom = typeof data.zoom === "number" ? Math.min(32, Math.max(1, data.zoom)) : 4;
+  state.brushSize = normalizeBrushSize(data.brushSize);
+  state.tool = TOOL_VALUES.has(data.tool) ? data.tool : "paint";
+  state.guidePoints = Array.isArray(data.guidePoints) ? data.guidePoints : [];
+  state.showGrid = Boolean(data.showGrid);
+  state.replaceRules = Array.isArray(data.replaceRules)
+    ? data.replaceRules.map(normalizeReplaceRule).filter(Boolean)
+    : [];
+  state.undoStack = [];
+  state.redoStack = [];
+  state.replacePreviewActive = false;
 
-    els.zoomRange.value = String(state.zoom);
-    if (typeof data.noiseRadius === "number") els.noiseRadius.value = String(data.noiseRadius);
-    if (typeof data.noiseDensity === "number") els.noiseDensity.value = String(data.noiseDensity);
-    if (typeof data.noiseJitter === "number") els.noiseJitter.value = String(data.noiseJitter);
-    els.showGridToggle.checked = state.showGrid;
-    return true;
+  els.zoomRange.value = String(state.zoom);
+  if (typeof data.noiseRadius === "number") els.noiseRadius.value = String(data.noiseRadius);
+  if (typeof data.noiseDensity === "number") els.noiseDensity.value = String(data.noiseDensity);
+  if (typeof data.noiseJitter === "number") els.noiseJitter.value = String(data.noiseJitter);
+  els.showGridToggle.checked = state.showGrid;
+  return true;
+}
+
+async function loadAutosave() {
+  try {
+    let data = await idbGet(AUTOSAVE_IDB_STORE, AUTOSAVE_IDB_KEY);
+    if (!data) {
+      const raw = localStorage.getItem(AUTOSAVE_KEY);
+      if (!raw) return false;
+      data = JSON.parse(raw);
+      try {
+        await idbPut(AUTOSAVE_IDB_STORE, AUTOSAVE_IDB_KEY, data);
+        localStorage.removeItem(AUTOSAVE_KEY);
+      } catch (error) {
+        console.warn("autosave migration failed", error);
+      }
+    }
+    return applyAutosaveData(data);
   } catch {
     return false;
   }
@@ -955,8 +1042,12 @@ function applyZoom(nextZoom, anchorClientX, anchorClientY) {
 function resizeCanvases(centerScroll = true) {
   const pxW = state.width * state.zoom;
   const pxH = state.height * state.zoom;
-  canvas.width = pxW;
-  canvas.height = pxH;
+  if (canvas.width !== state.width || canvas.height !== state.height) {
+    canvas.width = state.width;
+    canvas.height = state.height;
+    mapImageData = null;
+    dirtyMapBounds = null;
+  }
   canvas.style.width = `${pxW}px`;
   canvas.style.height = `${pxH}px`;
   guideCanvas.width = pxW;
@@ -969,72 +1060,104 @@ function resizeCanvases(centerScroll = true) {
   }
 }
 
-function renderZoneImage(image) {
-  // 海=暗くマスク / 未塗り陸=バイオームを淡色下敷き / 塗り済み=地理圏色
-  for (let y = 0; y < state.height; y++) {
-    for (let x = 0; x < state.width; x++) {
-      const biome = biomeByCode.get(state.grid[y][x]) ?? biomeByCode.get("OCN");
-      const offset = (y * state.width + x) * 4;
-      const zoneCode = state.zoneGrid?.[y]?.[x];
-      const zone = zoneByCode.get(zoneCode);
-      let r, g, b;
-      if (isOceanDeepBiome(biome)) {
-        const rgb = hexToRgb(biome.color); // 水域: 暗くマスク
-        r = Math.round(rgb.r * 0.35);
-        g = Math.round(rgb.g * 0.35);
-        b = Math.round(rgb.b * 0.35);
-      } else if (zone) {
-        const rgb = hexToRgb(zone.color); // 塗り済み陸: 地理圏色
-        if (state.zoneTransparent) {
-          // 透過: バイオーム(レイヤー1)を透かして重ねる
-          const bm = hexToRgb(biome.color);
-          r = Math.round(rgb.r * 0.5 + bm.r * 0.5);
-          g = Math.round(rgb.g * 0.5 + bm.g * 0.5);
-          b = Math.round(rgb.b * 0.5 + bm.b * 0.5);
-        } else {
-          r = rgb.r; g = rgb.g; b = rgb.b;
-        }
-      } else {
-        const rgb = hexToRgb(biome.color); // 未塗り陸: 淡色下敷き
-        r = Math.round(rgb.r * 0.5 + 128 * 0.5);
-        g = Math.round(rgb.g * 0.5 + 128 * 0.5);
-        b = Math.round(rgb.b * 0.5 + 128 * 0.5);
-      }
-      image.data[offset] = r;
-      image.data[offset + 1] = g;
-      image.data[offset + 2] = b;
-      image.data[offset + 3] = 255;
-    }
+function renderedPixelColor(x, y) {
+  const biome = biomeByCode.get(state.grid[y][x]) ?? biomeByCode.get("OCN");
+  if (!isZoneLayer()) {
+    const rgb = hexToRgb(biome.color);
+    const dim = state.highlight.size > 0 && !state.highlight.has(state.grid[y][x]);
+    return dim
+      ? { r: Math.round(rgb.r * 0.32), g: Math.round(rgb.g * 0.32), b: Math.round(rgb.b * 0.32) }
+      : rgb;
+  }
+
+  const zone = zoneByCode.get(state.zoneGrid?.[y]?.[x]);
+  if (isOceanDeepBiome(biome)) {
+    const rgb = hexToRgb(biome.color);
+    return {
+      r: Math.round(rgb.r * 0.35),
+      g: Math.round(rgb.g * 0.35),
+      b: Math.round(rgb.b * 0.35),
+    };
+  }
+  if (zone) {
+    const rgb = hexToRgb(zone.color);
+    if (!state.zoneTransparent) return rgb;
+    const underlay = hexToRgb(biome.color);
+    return {
+      r: Math.round(rgb.r * 0.5 + underlay.r * 0.5),
+      g: Math.round(rgb.g * 0.5 + underlay.g * 0.5),
+      b: Math.round(rgb.b * 0.5 + underlay.b * 0.5),
+    };
+  }
+  const rgb = hexToRgb(biome.color);
+  return {
+    r: Math.round(rgb.r * 0.5 + 128 * 0.5),
+    g: Math.round(rgb.g * 0.5 + 128 * 0.5),
+    b: Math.round(rgb.b * 0.5 + 128 * 0.5),
+  };
+}
+
+function writeRenderedPixel(image, x, y) {
+  const rgb = renderedPixelColor(x, y);
+  const offset = (y * state.width + x) * 4;
+  image.data[offset] = rgb.r;
+  image.data[offset + 1] = rgb.g;
+  image.data[offset + 2] = rgb.b;
+  image.data[offset + 3] = 255;
+}
+
+function flushDirtyMapRender() {
+  if (dirtyMapFrame !== null) {
+    cancelAnimationFrame(dirtyMapFrame);
+    dirtyMapFrame = null;
+  }
+  if (!dirtyMapBounds || !mapImageData) return;
+  const { minX, minY, maxX, maxY } = dirtyMapBounds;
+  dirtyMapBounds = null;
+  ctx.putImageData(
+    mapImageData,
+    0,
+    0,
+    minX,
+    minY,
+    maxX - minX + 1,
+    maxY - minY + 1,
+  );
+}
+
+function queueMapCellRender(x, y) {
+  if (!mapImageData || mapImageData.width !== state.width || mapImageData.height !== state.height) {
+    render();
+    return;
+  }
+  writeRenderedPixel(mapImageData, x, y);
+  if (!dirtyMapBounds) {
+    dirtyMapBounds = { minX: x, minY: y, maxX: x, maxY: y };
+  } else {
+    dirtyMapBounds.minX = Math.min(dirtyMapBounds.minX, x);
+    dirtyMapBounds.minY = Math.min(dirtyMapBounds.minY, y);
+    dirtyMapBounds.maxX = Math.max(dirtyMapBounds.maxX, x);
+    dirtyMapBounds.maxY = Math.max(dirtyMapBounds.maxY, y);
+  }
+  if (dirtyMapFrame === null) {
+    dirtyMapFrame = requestAnimationFrame(() => {
+      dirtyMapFrame = null;
+      flushDirtyMapRender();
+    });
   }
 }
 
 function render() {
-  const image = ctx.createImageData(state.width, state.height);
-  if (isZoneLayer()) {
-    renderZoneImage(image);
-  } else {
-    const activeHighlight = state.highlight.size > 0;
-    for (let y = 0; y < state.height; y++) {
-      for (let x = 0; x < state.width; x++) {
-        const code = state.grid[y][x];
-        const biome = biomeByCode.get(code) ?? biomeByCode.get("OCN");
-        const rgb = hexToRgb(biome.color);
-        const offset = (y * state.width + x) * 4;
-        const dim = activeHighlight && !state.highlight.has(code);
-        image.data[offset] = dim ? Math.round(rgb.r * 0.32) : rgb.r;
-        image.data[offset + 1] = dim ? Math.round(rgb.g * 0.32) : rgb.g;
-        image.data[offset + 2] = dim ? Math.round(rgb.b * 0.32) : rgb.b;
-        image.data[offset + 3] = 255;
-      }
-    }
+  if (dirtyMapFrame !== null) {
+    cancelAnimationFrame(dirtyMapFrame);
+    dirtyMapFrame = null;
   }
-  const offscreen = document.createElement("canvas");
-  offscreen.width = state.width;
-  offscreen.height = state.height;
-  offscreen.getContext("2d").putImageData(image, 0, 0);
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+  dirtyMapBounds = null;
+  mapImageData = ctx.createImageData(state.width, state.height);
+  for (let y = 0; y < state.height; y++) {
+    for (let x = 0; x < state.width; x++) writeRenderedPixel(mapImageData, x, y);
+  }
+  ctx.putImageData(mapImageData, 0, 0);
   renderGuide();
   updateInfo();
   scheduleAutosave();
@@ -1603,6 +1726,8 @@ function snapshotGrid() {
 }
 
 function restoreSnapshot(snapshot) {
+  const previousScrollLeft = wrap.scrollLeft;
+  const previousScrollTop = wrap.scrollTop;
   const rows = snapshot.split("\n");
   let geometry = detectMapGeometry(rows);
   let normalizedRows = geometry ? normalizeRows(rows, { geometry }) : null;
@@ -1621,7 +1746,9 @@ function restoreSnapshot(snapshot) {
   sanitizeStateGrid();
   ensureZoneGrid();
   clearSelection();
-  resizeCanvases();
+  resizeCanvases(false);
+  wrap.scrollLeft = previousScrollLeft;
+  wrap.scrollTop = previousScrollTop;
   if (state.activeLayer !== "biome") setActiveLayer("biome");
   else render();
   return true;
@@ -1798,11 +1925,13 @@ function paintCell(cx, cy, code = getSelectedCode()) {
   const grid = activeGrid();
   for (const { x, y } of brushPaintCells(cx, cy, state.brushSize)) {
     if (!canPaint(x, y)) continue;
+    const changed = grid[y][x] !== code;
     grid[y][x] = code;
     // レイヤー1で水域にしたセルはレイヤー2を未塗りに戻す(zone-layer-spec.md §5)
     if (!isZoneLayer() && isOceanDeepCode(code) && state.zoneGrid?.[y]) {
       state.zoneGrid[y][x] = ZONE_UNPAINTED;
     }
+    if (changed) queueMapCellRender(x, y);
   }
   if (isZoneLayer()) invalidateCoverageIfShown();
 }
@@ -1829,13 +1958,13 @@ function linePaint(a, b, code = getSelectedCode()) {
   }
 }
 
-function floodFill(x, y) {
+function floodFillBiomeLayer(x, y) {
   if (!canPaint(x, y)) return;
-  const grid = activeGrid();
-  const from = grid[y][x];
+  const from = state.grid[y][x];
   const to = getSelectedCode();
   if (from === to) return;
   pushUndo();
+  const grid = state.grid;
   const queue = [{ x, y }];
   const seen = new Set();
   while (queue.length) {
@@ -1846,7 +1975,7 @@ function floodFill(x, y) {
     if (point.x < 0 || point.y < 0 || point.x >= state.width || point.y >= state.height) continue;
     if (grid[point.y][point.x] !== from || !canPaint(point.x, point.y)) continue;
     grid[point.y][point.x] = to;
-    if (!isZoneLayer() && isOceanDeepCode(to) && state.zoneGrid?.[point.y]) {
+    if (isOceanDeepCode(to) && state.zoneGrid?.[point.y]) {
       state.zoneGrid[point.y][point.x] = ZONE_UNPAINTED;
     }
     queue.push({ x: point.x + 1, y: point.y });
@@ -1854,8 +1983,65 @@ function floodFill(x, y) {
     queue.push({ x: point.x, y: point.y + 1 });
     queue.push({ x: point.x, y: point.y - 1 });
   }
-  if (isZoneLayer()) invalidateCoverageIfShown();
   render();
+}
+
+function buildBiomeMaskFrom(x, y, biomeAtClick) {
+  const biomeLayer = state.grid;
+  const mask = new Set();
+  const queue = [{ x, y }];
+  const seen = new Set();
+  while (queue.length) {
+    const point = queue.pop();
+    const key = `${point.x},${point.y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const px = point.x;
+    const py = point.y;
+    if (px < 0 || py < 0 || px >= state.width || py >= state.height) continue;
+    if (biomeLayer[py][px] !== biomeAtClick) continue;
+    if (!canPaint(px, py)) continue;
+    mask.add(key);
+    queue.push({ x: px + 1, y: py }, { x: px - 1, y: py }, { x: px, y: py + 1 }, { x: px, y: py - 1 });
+  }
+  return mask;
+}
+
+function floodFillZoneLayer(x, y) {
+  if (!canPaint(x, y)) return;
+  const biomeAtClick = state.grid[y][x];
+  const from = state.zoneGrid[y][x];
+  const to = getSelectedCode();
+  if (from === to) return;
+  const biomeMask = buildBiomeMaskFrom(x, y, biomeAtClick);
+  pushUndo();
+  const zoneGrid = state.zoneGrid;
+  const queue = [{ x, y }];
+  const seen = new Set();
+  while (queue.length) {
+    const point = queue.pop();
+    const key = `${point.x},${point.y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const px = point.x;
+    const py = point.y;
+    if (px < 0 || py < 0 || px >= state.width || py >= state.height) continue;
+    if (!biomeMask.has(key)) continue;
+    if (zoneGrid[py][px] !== from) continue;
+    zoneGrid[py][px] = to;
+    queue.push({ x: px + 1, y: py }, { x: px - 1, y: py }, { x: px, y: py + 1 }, { x: px, y: py - 1 });
+  }
+  invalidateCoverageIfShown();
+  scheduleAutosave();
+  render();
+}
+
+function floodFill(x, y) {
+  if (state.activeLayer === "zone") {
+    floodFillZoneLayer(x, y);
+    return;
+  }
+  floodFillBiomeLayer(x, y);
 }
 
 function canvasPoint(event) {
@@ -2813,8 +2999,6 @@ function importZoneJson(text) {
 }
 
 // ---- .blmap パス記憶（File System Access API + IndexedDB）----
-const BLMAP_IDB_NAME = "blockland-map-maker-files";
-const BLMAP_IDB_STORE = "handles";
 const BLMAP_HANDLE_KEY = "blmap";
 const BLMAP_NAME_KEY = "blockland-map-maker-blmap-name";
 const BLMAP_PICKER_TYPES = [
@@ -2835,60 +3019,16 @@ function defaultBlmapFilename() {
   return `map_${state.width}x${state.height}.blmap`;
 }
 
-function openBlmapIdb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(BLMAP_IDB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(BLMAP_IDB_STORE)) {
-        db.createObjectStore(BLMAP_IDB_STORE);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
 async function idbGetHandle(key) {
-  const db = await openBlmapIdb();
-  try {
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(BLMAP_IDB_STORE, "readonly");
-      const req = tx.objectStore(BLMAP_IDB_STORE).get(key);
-      req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror = () => reject(req.error);
-    });
-  } finally {
-    db.close();
-  }
+  return idbGet(BLMAP_IDB_STORE, key);
 }
 
 async function idbSetHandle(key, value) {
-  const db = await openBlmapIdb();
-  try {
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(BLMAP_IDB_STORE, "readwrite");
-      tx.objectStore(BLMAP_IDB_STORE).put(value, key);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } finally {
-    db.close();
-  }
+  return idbPut(BLMAP_IDB_STORE, key, value);
 }
 
 async function idbDeleteHandle(key) {
-  const db = await openBlmapIdb();
-  try {
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(BLMAP_IDB_STORE, "readwrite");
-      tx.objectStore(BLMAP_IDB_STORE).delete(key);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } finally {
-    db.close();
-  }
+  return idbDelete(BLMAP_IDB_STORE, key);
 }
 
 async function ensureFileHandlePermission(handle, mode = "readwrite") {
@@ -3484,7 +3624,6 @@ function bindEvents() {
     }
     pushUndo();
     paintCell(point.x, point.y);
-    render();
   });
 
   canvas.addEventListener("pointermove", (event) => {
@@ -3550,7 +3689,6 @@ function bindEvents() {
     if (state.tool !== "paint") return;
     linePaint(state.lastCell, point);
     state.lastCell = point;
-    render();
   });
 
   canvas.addEventListener("pointerup", () => {
@@ -3603,7 +3741,10 @@ function bindEvents() {
     const wasDrawing = state.isDrawing;
     state.isDrawing = false;
     state.lastCell = null;
-    if (wasDrawing) flushAutosave();
+    if (wasDrawing) {
+      flushDirtyMapRender();
+      flushAutosave();
+    }
   });
   canvas.addEventListener("pointerenter", () => {
     if (state.optionKeyHeld) syncCanvasCursor();
@@ -3615,14 +3756,17 @@ function bindEvents() {
     state.lastCanvasPoint = null;
     state.lastCanvasPointFloat = null;
     hideBrushCursor();
-    if (wasDrawing) flushAutosave();
+    if (wasDrawing) {
+      flushDirtyMapRender();
+      flushAutosave();
+    }
   });
 }
 
-function init() {
+async function init() {
   buildPalette();
   bindEvents();
-  const restored = loadAutosave();
+  const restored = await loadAutosave();
   if (!restored) {
     state.grid = createGrid(state.width, state.height, "OCN");
   }
@@ -3654,7 +3798,6 @@ function init() {
         render();
       },
       covResultText: () => els.coverageResult?.textContent ?? "",
-      covDeadCount: () => state.coverage.dead.length,
       getCursor: () => (state.lastCanvasPoint ? { ...state.lastCanvasPoint } : null),
       getTool: () => state.tool,
       getBrushSize: () => state.brushSize,
@@ -3663,4 +3806,4 @@ function init() {
   }
 }
 
-init();
+init().catch((error) => console.error("init failed", error));

@@ -5,6 +5,39 @@ import { chromium } from "playwright";
 const PORT = 8877;
 const BASE = `http://127.0.0.1:${PORT}`;
 const AUTOSAVE_KEY = "blockland-map-maker-autosave";
+const APP_IDB_NAME = "blockland-map-maker-files";
+const AUTOSAVE_IDB_STORE = "autosave";
+const AUTOSAVE_IDB_KEY = "current";
+
+async function clearAutosaveStorage(page) {
+  await page.evaluate(async ({ lsKey, dbName, store, key }) => {
+    localStorage.removeItem(lsKey);
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open(dbName);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(store)) {
+          db.close();
+          resolve();
+          return;
+        }
+        const tx = db.transaction(store, "readwrite");
+        tx.objectStore(store).delete(key);
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }, {
+    lsKey: AUTOSAVE_KEY,
+    dbName: APP_IDB_NAME,
+    store: AUTOSAVE_IDB_STORE,
+    key: AUTOSAVE_IDB_KEY,
+  });
+}
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,7 +86,7 @@ try {
   browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await page.goto(`${BASE}/index.html?test=1`);
-  await page.evaluate((key) => localStorage.removeItem(key), AUTOSAVE_KEY);
+  await clearAutosaveStorage(page);
   await page.reload();
   await page.waitForFunction(() => window.__mapMakerTest?.ready);
   await page.evaluate(() => {
@@ -67,9 +100,26 @@ try {
 
   assert.equal(await page.evaluate(() => window.__mapMakerTest.getTool()), "paint");
   assert.equal(await page.evaluate(() => window.__mapMakerTest.getCell(20, 20)), "OCN");
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const canvas = document.getElementById("mapCanvas");
+      return { width: canvas.width, height: canvas.height, cssWidth: canvas.style.width };
+    }),
+    { width: 256, height: 256, cssWidth: "1024px" },
+    "Canvas内部は地図解像度のままCSS拡大する",
+  );
 
   await paintAtCell(page, 20, 20);
   await page.waitForFunction(() => window.__mapMakerTest.getCell(20, 20) === "PLN");
+  const renderedColor = await page.evaluate(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const canvas = document.getElementById("mapCanvas");
+    const actual = [...canvas.getContext("2d").getImageData(20, 20, 1, 1).data.slice(0, 3)];
+    const swatch = document.querySelector('.palette-row[data-code="PLN"] .swatch');
+    const expected = getComputedStyle(swatch).backgroundColor.match(/\d+/g).slice(0, 3).map(Number);
+    return { actual, expected };
+  });
+  assert.deepEqual(renderedColor.actual, renderedColor.expected, "差分描画後のCanvas色がパレットと一致する");
 
   const cursor = await page.evaluate(() => window.__mapMakerTest.getCursor());
   assert.deepEqual(cursor, { x: 20, y: 20 }, "カーソル位置と描画位置が一致");
@@ -95,6 +145,21 @@ try {
     const api = window.__mapMakerTest;
     return [40, 41, 42, 43, 44, 45, 46].every((x) => api.getCell(x, 40) === "PLN");
   });
+
+  await page.evaluate(() => {
+    const biomeRows = Array(512).fill("OCN".repeat(512));
+    const zoneRows = Array(512).fill("___".repeat(512));
+    window.__mapMakerTest.setGrids(biomeRows, zoneRows);
+    document.getElementById("layerBiomeBtn").click();
+  });
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const canvas = document.getElementById("mapCanvas");
+      return { width: canvas.width, height: canvas.height, cssWidth: canvas.style.width };
+    }),
+    { width: 512, height: 512, cssWidth: "2048px" },
+    "512マップでも内部Canvasを2048pxへ拡大しない",
+  );
 
   console.log("paint-e2e: all tests passed");
 } finally {

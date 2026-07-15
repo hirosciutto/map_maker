@@ -5,6 +5,8 @@ import argparse
 import csv
 import json
 import math
+import subprocess
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -21,7 +23,43 @@ COUNTRIES = DATA / "ne/admin/countries/ne_10m_admin_0_countries.shp"
 LAKES = DATA / "ne/lakes/ne_10m_lakes.shp"
 GLACIERS = DATA / "ne/glaciated_areas/ne_10m_glaciated_areas.shp"
 VOLCANO_CSV = DATA / "volcano_db.csv"
-DEM = DATA / "dem/ETOPO_2022_v1_60s_N90W180_bed.tif"
+DEM = DATA / "dem/ETOPO_2022_v1_60s_N90W180_surface.tif"
+
+SOURCE_DOWNLOADS = {
+    "countries": (
+        "https://naturalearth.s3.amazonaws.com/5.1.1/10m_cultural/ne_10m_admin_0_countries.zip",
+        DATA / "ne/admin/countries.zip",
+        DATA / "ne/admin/countries",
+        COUNTRIES,
+    ),
+    "lakes": (
+        "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_lakes.zip",
+        DATA / "ne/lakes.zip",
+        DATA / "ne/lakes",
+        LAKES,
+    ),
+    "glaciated_areas": (
+        "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_glaciated_areas.zip",
+        DATA / "ne/glaciated_areas.zip",
+        DATA / "ne/glaciated_areas",
+        GLACIERS,
+    ),
+    "ecoregions": (
+        "https://storage.googleapis.com/teow2016/Ecoregions2017.zip",
+        DATA / "ecoregions.zip",
+        DATA / "ecoregions",
+        ECOREGIONS,
+    ),
+}
+ETOPO_URL = (
+    "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/"
+    "60s_surface_elev_gtif/ETOPO_2022_v1_60s_N90W180_surface.tif"
+)
+VOLCANO_WFS_URL = (
+    "https://webservices.volcano.si.edu/geoserver/GVP-VOTW/ows?"
+    "service=WFS&version=1.0.0&request=GetFeature&"
+    "typeName=GVP-VOTW%3ASmithsonian_VOTW_Holocene_Volcanoes&outputFormat=csv"
+)
 
 OUT_DIR = Path("/Users/nakashima/works/map_maker/output")
 TIBETAN_GLACIER_TARGET_KM2 = 44_400.0
@@ -99,6 +137,29 @@ RGB = {
 }
 
 
+def run_curl(url: str, destination: Path, resume: bool = False) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    command = ["curl", "-k", "-L", "--fail", "--retry", "5", "-sS"]
+    if resume and destination.exists():
+        command.extend(["-C", "-"])
+    command.extend([url, "-o", str(destination)])
+    subprocess.run(command, check=True)
+
+
+def ensure_source_data() -> None:
+    for url, archive, destination, required in SOURCE_DOWNLOADS.values():
+        if required.exists():
+            continue
+        run_curl(url, archive)
+        destination.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive) as source:
+            source.extractall(destination)
+    if not DEM.exists() or DEM.stat().st_size < 400_000_000:
+        run_curl(ETOPO_URL, DEM, resume=True)
+    if not VOLCANO_CSV.exists() or VOLCANO_CSV.stat().st_size < 10_000:
+        run_curl(VOLCANO_WFS_URL, VOLCANO_CSV)
+
+
 RECIPE_MONITORS: list[dict] = [
     {
         "name": "ヒマラヤ／カラコルム",
@@ -115,7 +176,7 @@ RECIPE_MONITORS: list[dict] = [
     {
         "name": "中央アジア（カザフ〜天山・パミール）",
         "coords": [(68, 43), (75, 45), (84, 44), (90, 41), (84, 39), (74, 40)],
-        "allowed": {"STP", "HST", "CDS", "CDM", "CDH", "MTN", "ARK", "HRK", "HGL", "HMT", "XPK"},
+        "allowed": {"STP", "HST", "CDS", "HDS", "CDM", "CDH", "MTN", "ARK", "HRK", "HGL", "HMT", "XPK"},
         "forbidden_external": {"RPL", "PLT"},
     },
     {
@@ -267,6 +328,45 @@ NAMED_MOUNTAIN_RANGES: list[dict] = [
     {"name": "ニューギニア中央山系", "points": [(132, -3), (139, -4), (145, -5), (149, -6)], "width": 3.5, "min_elev": 700, "min_relief": 450},
     {"name": "大分水嶺山脈", "points": [(145, -18), (151, -25), (149, -33), (147, -38)], "width": 3.5, "min_elev": 300, "min_relief": 260},
     {"name": "ニュージーランド南アルプス", "points": [(168, -46), (171, -43), (173, -41)], "width": 2.5, "min_elev": 450, "min_relief": 400, "profile": "temperate_wet"},
+]
+
+
+WORLD_REGION_REVIEWS: list[dict] = [
+    {"name": "グリーンランド", "coords": [(-74, 59), (-10, 59), (-10, 84), (-74, 84)], "core": {"ICE", "IFD", "IDM", "GLC", "SNM", "PLR", "TND"}},
+    {"name": "カナダ北部と北極の島々", "coords": [(-140, 58), (-55, 58), (-55, 84), (-140, 84)], "core": {"TGA", "CTG", "TND", "PLR", "ICE", "IFD", "GLC"}},
+    {"name": "アラスカ", "coords": [(-170, 51), (-130, 51), (-130, 72), (-170, 72)], "core": {"TGA", "CTG", "TND", "MFR", "SUB", "MTN", "SNM", "GLC"}},
+    {"name": "北アメリカ西部", "coords": [(-130, 25), (-102, 25), (-102, 60), (-130, 60)], "core": {"TGA", "CTG", "MFR", "SUB", "WDH", "MTN", "ARK", "STP", "PLT", "DSR", "MSA", "SHR"}},
+    {"name": "北アメリカ中央平原", "coords": [(-105, 28), (-90, 28), (-90, 55), (-105, 55)], "core": {"PLN", "STP", "PLT", "HST", "FOR"}},
+    {"name": "北アメリカ東部", "coords": [(-92, 25), (-60, 25), (-60, 55), (-92, 55)], "core": {"FOR", "TGA", "STP", "WDH", "MFR", "PLN", "WET", "MNG"}},
+    {"name": "メキシコ・中央アメリカ・カリブ海", "coords": [(-118, 7), (-58, 7), (-58, 32), (-118, 32)], "core": {"DSR", "THN", "DPL", "HDS", "CDM", "STP", "HST", "MFR", "WDH", "DRF", "JGL", "MJG", "CLF", "MNG", "VOL"}},
+    {"name": "アマゾン川流域", "coords": [(-80, -18), (-45, -18), (-45, 8), (-80, 8)], "core": {"JGL", "MJG", "RFM", "WET", "MNG"}},
+    {"name": "アンデス山脈", "coords": [(-82, 12), (-73, 12), (-67, -12), (-62, -25), (-67, -56), (-76, -56), (-75, -30), (-80, -5)], "core": {"JGL", "FOR", "STP", "MJG", "RFM", "CLF", "ALG", "HST", "CDM", "CDH", "MTN", "ARK", "HRK", "CHL", "HMT", "PSN", "GLC", "HGL"}},
+    {"name": "ブラジル高原と南アメリカ東部", "coords": [(-65, -35), (-34, -35), (-34, 2), (-65, 2)], "core": {"SAV", "SVH", "DRF", "THN", "PLT", "FOR", "JGL", "WET"}},
+    {"name": "パンパとパタゴニア", "coords": [(-75, -56), (-52, -56), (-52, -28), (-75, -28)], "core": {"STP", "HST", "RPL", "DSR", "SHR", "SAV", "FOR", "MTN", "GLC", "IFD"}},
+    {"name": "西ヨーロッパ", "coords": [(-12, 42), (16, 42), (16, 60), (-12, 60)], "core": {"FOR", "PLN", "WDH", "MFR", "SHR", "STP", "WET"}},
+    {"name": "北ヨーロッパ", "coords": [(-12, 55), (32, 55), (32, 72), (-12, 72)], "core": {"FOR", "TGA", "CTG", "TND", "WDH", "MFR", "SUB", "MTN"}},
+    {"name": "南ヨーロッパと地中海沿岸", "coords": [(-10, 34), (32, 34), (32, 47), (-10, 47)], "core": {"SHR", "FOR", "STP", "DPL", "WDH", "MFR", "MTN", "ARK"}},
+    {"name": "東ヨーロッパ", "coords": [(16, 44), (45, 44), (45, 60), (16, 60)], "core": {"FOR", "PLN", "STP", "TGA", "WET", "MFR"}},
+    {"name": "西シベリア", "coords": [(45, 48), (90, 48), (90, 72), (45, 72)], "core": {"STP", "FOR", "TGA", "CTG", "TND", "PLR", "WET", "MOR", "PLT"}},
+    {"name": "中央・東シベリア", "coords": [(90, 48), (180, 48), (180, 76), (90, 76)], "core": {"TGA", "CTG", "TND", "PLR", "PLT", "MFR", "SUB", "MTN", "VOL"}},
+    {"name": "サハラ砂漠", "coords": [(-17, 17), (35, 17), (35, 33), (-17, 33)], "core": {"DSR", "RPL", "DPL", "MTN"}},
+    {"name": "サヘルと西アフリカ", "coords": [(-18, 5), (20, 5), (20, 18), (-18, 18)], "core": {"THN", "SAV", "DRF", "JGL", "MNG"}},
+    {"name": "コンゴ盆地", "coords": [(10, -4), (16, -9), (27, -7), (31, -2), (29, 5), (19, 6), (10, 2)], "core": {"JGL", "MJG", "RFM", "WET"}},
+    {"name": "東アフリカ", "coords": [(28, -15), (48, -15), (48, 15), (28, 15)], "core": {"SAV", "SVH", "THN", "JGL", "MJG", "PLT", "HST", "WET", "MFR", "MTN", "VOL"}},
+    {"name": "アフリカ南部", "coords": [(10, -36), (36, -36), (36, -15), (10, -15)], "core": {"DSR", "HDS", "CDM", "THN", "SAV", "SVH", "HST", "RPL", "SHR", "WDH", "MTN"}},
+    {"name": "マダガスカル", "coords": [(42, -27), (51, -27), (51, -11), (42, -11)], "core": {"JGL", "MJG", "DRF", "THN", "PLT", "HST", "RFM"}},
+    {"name": "アラビア半島", "coords": [(34, 12), (60, 12), (60, 32), (34, 32)], "core": {"DSR", "HDS", "CDM", "RPL", "DPL", "THN", "SHR", "WET"}},
+    {"name": "トルコ・イラン・コーカサス", "coords": [(26, 25), (65, 25), (65, 44), (26, 44)], "core": {"DSR", "HDS", "STP", "HST", "DPL", "CDS", "CDM", "MFR", "MTN", "ARK", "HMT"}},
+    {"name": "カザフスタンと中央アジア", "coords": [(45, 35), (90, 35), (90, 55), (45, 55)], "core": {"STP", "HST", "CDS", "DPL", "HDS", "CDM", "MTN", "ARK"}},
+    {"name": "モンゴルとゴビ砂漠", "coords": [(85, 37), (120, 37), (120, 53), (85, 53)], "core": {"STP", "FOR", "TGA", "HST", "CDS", "HDS", "CDM", "RPL", "MTN"}},
+    {"name": "チベット高原とヒマラヤ", "coords": [(70, 35), (78, 37), (91, 35), (104, 32), (101, 27), (89, 28), (78, 30)], "core": {"CHL", "CDH", "CDM", "SST", "ALG", "ARK", "HRK", "HMT", "HGL", "PSN", "XPK", "HIM"}},
+    {"name": "中国東部・朝鮮半島・日本", "coords": [(100, 18), (150, 18), (150, 48), (100, 48)], "core": {"PLN", "STP", "HST", "FOR", "WDH", "MFR", "DRF", "JGL", "MJG", "WET", "TGA", "VOL"}},
+    {"name": "インド亜大陸", "coords": [(66, 6), (92, 6), (92, 30), (66, 30)], "core": {"DRF", "DRU", "STP", "PLT", "DSR", "WET", "JGL", "MJG", "RFM", "CLF"}},
+    {"name": "東南アジア大陸部", "coords": [(92, 5), (110, 5), (110, 28), (92, 28)], "core": {"DRF", "DRU", "JGL", "MJG", "RFM", "CLF", "WET", "MNG"}},
+    {"name": "インドネシア・フィリピン・ニューギニア", "coords": [(110, -12), (155, -12), (155, 22), (110, 22)], "core": {"JGL", "MJG", "RFM", "CLF", "MNG", "VOL", "HMT", "PSN"}},
+    {"name": "オーストラリア", "coords": [(112, -45), (155, -45), (155, -10), (112, -10)], "core": {"DSR", "THN", "SAV", "RPL", "SHR", "FOR", "WDH", "MFR", "MTN", "MNG"}},
+    {"name": "ニュージーランド", "coords": [(164, -49), (180, -49), (180, -33), (164, -33)], "core": {"FOR", "WDH", "MFR", "SUB", "MTN", "GLC", "VOL"}},
+    {"name": "南極大陸", "coords": [(-180, -90), (180, -90), (180, -60), (-180, -60)], "core": {"ICE", "IFD", "IDM", "GLC", "SNM", "HMT", "PLR"}},
 ]
 
 
@@ -649,27 +749,49 @@ def candidate_family(code: str, lat: float) -> list[str] | None:
     if code in {"OCN", "SHF", "DPO", "TRN", "BCH", "TWN", "VOL"}:
         return None
     if code == "MNG":
-        return ["MNG", "WET", "JGL", "DRF"]
-    if code in {"ICE", "IDM", "IFD", "GLC", "HGL", "SNW", "TND", "PLR"}:
-        if abs(lat) >= 66:
-            return ["PLR", "TND", "SNW", "ICE", "IFD", "GLC", "IDM"]
-        return ["TND", "SNW", "IFD", "GLC", "HGL", "SNM", "PSN"]
-    if code in {"JGL", "DRF", "DRU", "MJG", "RFM", "CLF"}:
-        return ["JGL", "DRF", "DRU", "MJG", "RFM", "CLF", "ALG", "ARK", "HMT", "PSN"]
-    if code in {"FOR", "WDH", "MFR", "SUB", "TGA", "CTG"}:
-        if lat >= 50:
-            return ["FOR", "WDH", "TGA", "CTG", "MFR", "SUB", "ALT", "SNM", "GLC"]
-        return ["FOR", "WDH", "MFR", "SUB", "ALG", "ARK", "HRK", "HMT"]
+        return ["MNG"]
+    if code in {"ICE", "IDM", "IFD", "GLC", "HGL"}:
+        if abs(lat) >= 60:
+            return ["ICE", "IFD", "GLC", "IDM", "SNM"]
+        return ["IFD", "GLC", "HGL", "SNM", "PSN"]
+    if code in {"SNW", "TND", "PLR"}:
+        return ["PLR", "TND", "SNW", "ALT", "AFF", "ARK", "SNM"]
+    if code in {"JGL", "MJG", "RFM", "CLF"}:
+        return ["JGL", "MJG", "RFM", "CLF", "ALG", "ARK", "HMT", "PSN"]
+    if code in {"DRF", "DRU"}:
+        return ["DRF", "DRU", "ALG", "ARK", "HMT"]
+    if code in {"FOR", "WDH", "MFR", "SUB"}:
+        return ["FOR", "WDH", "MFR", "SUB", "ALG", "ARK", "SNM", "GLC"]
+    if code in {"TGA", "CTG"}:
+        return ["TGA", "CTG", "SUB", "ALT", "SNM", "GLC"]
     if code == "PLT":
-        return ["PLN", "STP", "PLT", "HST", "SST", "ALG", "AFF", "CHL"]
-    if code in {"PLN", "MDW", "SAV", "SHR", "STP", "SVH", "HST", "SST"}:
-        if abs(lat) < 25:
-            return ["SAV", "SVH", "HST", "SST", "ALG", "AFF", "CHL"]
-        return ["PLN", "SHR", "STP", "HST", "SST", "ALG", "AFF", "CHL"]
-    if code in {"DSR", "THN", "DPL", "CDS", "HDS", "CDM", "CDH", "SLT", "DEP", "RPL", "MSA"}:
-        if abs(lat) < 32:
-            return ["DEP", "DSR", "THN", "DPL", "HDS", "CDM", "CDH", "CHL"]
-        return ["CDS", "DPL", "RPL", "HDS", "CDM", "CDH", "CHL", "HRK"]
+        return ["PLT", "ALG", "AFF", "CHL"]
+    if code in {"PLN", "MDW"}:
+        return [code]
+    if code in {"SAV", "SVH"}:
+        return ["SAV", "SVH", "ALG", "ARK", "HMT"]
+    if code == "SHR":
+        return ["SHR", "WDH", "MFR", "ALG", "ARK"]
+    if code in {"STP", "HST", "SST"}:
+        return ["STP", "HST", "SST", "ALG", "AFF", "CHL"]
+    if code == "THN":
+        return ["THN", "SVH", "HST"]
+    if code == "DSR":
+        return ["DSR", "HDS", "CDM", "CDH", "CHL"]
+    if code == "CDS":
+        return ["CDS", "HDS", "CDM", "CDH", "CHL", "HRK"]
+    if code == "DPL":
+        return ["DPL", "HDS", "CDM", "CDH", "CHL"]
+    if code == "HDS":
+        return ["HDS", "CDM", "CDH", "CHL", "HRK"]
+    if code in {"CDM", "CDH"}:
+        return ["CDM", "CDH", "CHL", "HRK"]
+    if code == "RPL":
+        return ["RPL", "CDM", "CDH", "HRK"]
+    if code == "MSA":
+        return ["MSA", "HDS", "CDM", "HRK"]
+    if code in {"SLT", "DEP"}:
+        return [code]
     if code in {"MSA", "RPL", "MTN", "ARK", "HRK", "ALG", "ALT", "SNM", "AFF", "CHL", "HMT", "PSN", "XPK", "HIM"}:
         return ["MTN", "ALG", "ARK", "ALT", "HRK", "CHL", "HMT", "HGL", "PSN", "XPK", "HIM"]
     if code in {"WET", "MOR"}:
@@ -851,17 +973,13 @@ def apply_dem_and_recipes(codes: np.ndarray, land_mask: Image.Image, dem: np.nda
 
     # §6 recipe overlays. These are not rectangular boxes; they are coarse geographic
     # polygons following real ranges/basins, applied after ecoregions to force named regions.
-    apply_region(codes, land, [(73, 36), (77, 37), (82, 36.5), (88, 34), (96, 31), (98, 28), (91, 28), (84, 30), (76, 33), (70, 35)], "HIM", {"HMT", "PSN", "XPK", "ARK", "CHL", "CDM", "CDH", "SUB", "MFR", "FOR", "DRF"}, 1.2)
     apply_region(codes, land, [(78, 33), (86, 34.5), (96, 34), (103, 31), (101, 28), (92, 29), (82, 30), (76, 31)], "CHL", {"HST", "SST", "CDM", "CDH", "HDS", "DPL", "PLT", "ALG", "MTN"}, 1.6)
-    apply_region(codes, land, [(68, 43), (75, 45), (84, 44), (90, 41), (84, 39), (74, 40)], "HMT", {"STP", "HST", "CDS", "DPL", "MTN", "ARK", "CDM"}, 1.3)
     apply_region(codes, land, [(75, 41), (82, 42), (90, 40), (90, 37), (82, 36), (76, 37)], "CDS", {"DSR", "HDS", "DPL", "STP", "HST"}, 1.2)
     apply_region(codes, land, [(92, 44), (104, 46), (116, 44), (114, 40), (101, 39), (91, 41)], "CDS", {"STP", "HST", "DPL", "HDS", "RPL", "PLN"}, 1.8)
     apply_region(codes, land, [(96, 48), (105, 49), (116, 47), (116, 43), (104, 42), (94, 44)], "HST", {"STP", "PLN", "CDS", "DPL", "FOR"}, 1.8)
 
     # North America: Rockies, Sierra/Cascades, Great Plains, SW deserts.
     apply_region(codes, land, [(-126, 61), (-118, 57), (-112, 49), (-106, 41), (-104, 35), (-109, 31), (-116, 39), (-124, 50), (-132, 58)], "MFR", {"FOR", "TGA", "STP", "PLN", "WDH", "SUB"}, 1.8)
-    apply_region(codes, land, [(-122, 58), (-116, 52), (-111, 45), (-106, 38), (-107, 33), (-112, 36), (-118, 47), (-126, 56)], "MTN", {"MFR", "SUB", "FOR", "TGA", "STP"}, 0.9)
-    apply_region(codes, land, [(-116, 52), (-111, 47), (-107, 42), (-109, 39), (-114, 45), (-119, 50)], "ARK", {"MTN", "MFR", "SUB"}, 0.7)
     apply_region(codes, land, [(-116, 36), (-111, 35), (-108, 38), (-109, 41), (-114, 40)], "MSA", {"DSR", "DPL", "HDS", "STP", "RPL"}, 1.0)
     apply_region(codes, land, [(-122, 36), (-117, 34), (-114, 31), (-109, 29), (-104, 31), (-105, 36), (-113, 38)], "DSR", {"STP", "SAV", "SHR", "DPL", "RPL", "PLN"}, 1.5)
     apply_region(codes, land, [(-106, 49), (-97, 49), (-96, 30), (-104, 28), (-108, 39)], "STP", {"PLN", "FOR", "SAV", "SHR"}, 2.2)
@@ -875,19 +993,17 @@ def apply_dem_and_recipes(codes: np.ndarray, land_mask: Image.Image, dem: np.nda
     high_plains &= np.isin(codes, ["STP", "PLN", "HST"])
     codes[high_plains] = "PLT"
 
-    # Andes with altitude bands.
-    apply_region(codes, land, [(-80, 9), (-76, 7), (-72, -8), (-69, -20), (-68, -34), (-70, -51), (-73, -55), (-76, -35), (-79, -15)], "HMT", {"JGL", "RFM", "CLF", "FOR", "STP", "HST", "MTN", "ARK", "CHL"}, 1.4)
+    # Andes plateaus. Rugged mountain cells are added later from the DEM-supported
+    # named-range pass; broad recipe polygons must never paint mountain belts.
     apply_region(codes, land, [(-72, -15), (-66, -15), (-63, -24), (-66, -28), (-71, -26)], "CHL", {"HMT", "HST", "CDS", "CDM", "CDH", "STP", "DSR"}, 1.2)
     apply_region(codes, land, [(-72, -28), (-68, -28), (-67, -18), (-70, -17), (-73, -22)], "CDH", {"CHL", "HDS", "CDS", "DSR", "HST"}, 1.1)
 
     # Europe / West Asia.
-    apply_region(codes, land, [(5, 45), (8, 47), (14, 48), (17, 46), (14, 44), (7, 44)], "HMT", {"FOR", "MFR", "SUB", "MTN", "ARK", "ALG"}, 1.0)
     apply_region(codes, land, [(31, 39), (38, 41), (44, 39), (41, 36), (33, 37)], "HST", {"STP", "DPL", "SHR", "FOR"}, 1.3)
-    apply_region(codes, land, [(43, 36), (50, 35), (58, 30), (56, 26), (48, 28), (42, 33)], "MTN", {"DPL", "CDS", "DSR", "STP", "SHR"}, 1.1)
     apply_region(codes, land, [(45, 34), (57, 35), (64, 31), (60, 27), (51, 29)], "DPL", {"CDS", "DSR", "STP", "RPL", "HDS"}, 1.4)
 
     # Africa.
-    apply_region(codes, land, [(-18, 15), (-14, 14), (-9, 13.5), (-5, 13), (0, 12.4), (4, 13.1), (8, 11.8), (12, 12.7), (17, 11.9), (22, 13.1), (28, 14), (38, 18), (34, 23), (12, 22), (-9, 20)], "THN", {"SAV", "DSR", "DRF", "PLN"}, 2.2)
+    apply_region(codes, land, [(-18, 15), (-9, 14), (0, 13), (10, 12), (20, 12.5), (30, 14), (36, 17), (34, 19), (20, 17), (5, 16), (-10, 18)], "THN", {"SAV", "DRF", "PLN"}, 1.4)
     apply_region(codes, land, [(32, 14), (41, 13), (44, 8), (40, 4), (34, 6)], "PLT", {"SAV", "DRF", "FOR", "HST", "SVH"}, 1.3)
     apply_region(codes, land, [(34, 10), (41, 9), (43, 3), (39, -4), (35, -2)], "SVH", {"SAV", "PLT", "DRF", "JGL"}, 1.3)
     apply_region(codes, land, [(20, -32), (29, -31), (31, -25), (26, -22), (20, -25)], "HST", {"SAV", "DSR", "THN", "STP"}, 1.4)
@@ -895,8 +1011,6 @@ def apply_dem_and_recipes(codes: np.ndarray, land_mask: Image.Image, dem: np.nda
 
     # Australia / Oceania.
     apply_region(codes, land, [(116, -20), (126, -18), (139, -21), (144, -27), (139, -33), (126, -33), (116, -29)], "DSR", {"SAV", "THN", "STP", "PLN", "RPL"}, 2.1)
-    apply_region(codes, land, [(144, -38), (151, -34), (154, -24), (151, -17), (147, -25), (145, -34)], "MTN", {"FOR", "SAV", "DRF", "PLN", "WDH"}, 1.0)
-    apply_region(codes, land, [(166, -47), (174, -45), (177, -40), (171, -39), (166, -42)], "GLC", {"FOR", "MFR", "MTN", "HMT", "SUB"}, 0.9)
 
     # Tropical montane forests.
     apply_region(codes, land, [(-78, 9), (-72, 6), (-70, -6), (-74, -13), (-78, -4)], "CLF", {"JGL", "MJG", "RFM", "HMT"}, 1.3)
@@ -941,22 +1055,32 @@ def add_glaciers_and_lakes(codes: np.ndarray, land_mask: Image.Image, dem: np.nd
     water = np.isin(updated, ["OCN"]) & land
     yy = np.arange(codes.shape[0])[:, None]
     lat = 90 - (yy + 0.5) / codes.shape[0] * 180
-    antarctic_glacier = glacier & land & (lat < -60)
-    polar_south_dome = antarctic_glacier & (codes == "IDM")
-    polar_ice = (antarctic_glacier & ~polar_south_dome) | (glacier & land & (lat > 60))
-    nonpolar_glacier = glacier & land & ~(polar_south_dome | polar_ice)
+    filled_dem = np.where(np.isfinite(dem), dem, 0)
+    relief = (
+        ndimage.maximum_filter(filled_dem, size=5, mode="nearest")
+        - ndimage.minimum_filter(filled_dem, size=5, mode="nearest")
+    )
+    polar_glacier = glacier & land & (np.abs(lat) >= 60)
+    nonpolar_glacier = glacier & land & ~polar_glacier
     preserve_peak = np.isin(codes, ["PSN", "XPK", "HIM"])
     high_nonpolar = nonpolar_glacier & (dem > 4000) & ~preserve_peak
     ordinary_nonpolar = nonpolar_glacier & ~high_nonpolar & ~preserve_peak
-    codes[polar_south_dome] = "IDM"
-    codes[polar_ice] = "ICE"
+    codes[polar_glacier & (filled_dem < 850)] = "ICE"
+    codes[polar_glacier & (filled_dem >= 850) & (filled_dem < 2350)] = "IFD"
+    codes[polar_glacier & (filled_dem >= 2350)] = "IDM"
+    rugged_threshold = np.where(lat >= 0, 300, 450)
+    rugged_polar = polar_glacier & (filled_dem >= 900) & (filled_dem < 2850)
+    rugged_polar &= relief >= rugged_threshold
+    snowy_polar = polar_glacier & (filled_dem >= 2700) & (relief >= 450)
+    codes[rugged_polar] = "GLC"
+    codes[snowy_polar] = "SNM"
     codes[high_nonpolar] = "HGL"
     codes[ordinary_nonpolar] = "GLC"
     codes[water] = "OCN"
     naturalize_raster_steps(
         codes,
         land,
-        {"PLR", "SNW", "TND", "ICE", "IFD", "GLC", "IDM", "HGL"},
+        {"PLR", "SNW", "TND", "ICE", "IFD", "GLC", "IDM", "SNM", "HGL"},
         20260715,
     )
 
@@ -1103,6 +1227,16 @@ def correct_landmark_biomes(
         wetland = west_siberia & wet_source & (wet_noise >= wet_cutoff)
         codes[wetland & (dem <= 120)] = "WET"
         codes[wetland & (dem > 120)] = "MOR"
+
+    # Southwestern Madagascar is spiny thicket and dry scrub, not an open
+    # Sahara-style desert. Preserve the western dry forest and eastern rainforest.
+    madagascar_southwest = polygon_mask(
+        codes.shape[1],
+        codes.shape[0],
+        [(42.8, -26), (46.8, -26), (47.2, -20), (44.5, -18), (43, -21)],
+        blur=0.4,
+    ) & land & (dem < 900)
+    codes[madagascar_southwest & (codes == "DSR")] = "THN"
 
 
 def earth_cell_area_rows_km2(width: int, height: int) -> np.ndarray:
@@ -1275,7 +1409,7 @@ def add_volcanoes(codes: np.ndarray, land_mask: Image.Image, dem: np.ndarray) ->
             try:
                 lat = float(row["Latitude"])
                 lon = float(row["Longitude"])
-                elev = float(row.get("Elev") or 0)
+                elev = float(row.get("Elevation") or row.get("Elev") or 0)
             except Exception:
                 continue
             cx, cy = lonlat_to_xy(lon, lat, width, height)
@@ -2075,6 +2209,87 @@ def write_shape_audit_report(codes: np.ndarray, path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_world_region_review(
+    codes: np.ndarray,
+    land_mask: Image.Image,
+    path: Path,
+    previous_path: Path | None = None,
+) -> None:
+    land = np.array(land_mask) > 0
+    previous_codes = None
+    if previous_path and previous_path.exists():
+        previous_image = Image.open(previous_path).convert("RGB")
+        if previous_image.size == (codes.shape[1], codes.shape[0]):
+            previous_codes = code_array_from_image(previous_image)
+
+    lines = [
+        "# 全世界・地域別再監査",
+        "",
+        "- 判定は国境ではなく、山脈・平野・乾燥帯・森林帯が周辺国へ連続する広域で行う",
+        "- 中核率は、その地域を説明できる主要バイオームが陸地に占める割合",
+        "- 変更率は今回の再生成前画像から変わった陸地セルの割合",
+        "",
+        "| 地域 | 中核率 | 変更率 | 多いバイオーム | 判定 |",
+        "|---|---:|---:|---|---|",
+    ]
+    regional_changes: list[tuple[str, float, Counter]] = []
+    for review in WORLD_REGION_REVIEWS:
+        mask = polygon_mask(codes.shape[1], codes.shape[0], review["coords"], blur=0.0) & land
+        count = int(mask.sum())
+        if not count:
+            lines.append(f"| {review['name']} | - | - | 陸地セルなし | 解像度限界 |")
+            continue
+        values = codes[mask]
+        counts = Counter(values)
+        core_count = sum(counts.get(code, 0) for code in review["core"])
+        core_ratio = core_count / count
+        top = " / ".join(
+            f"`{code}` {BIOMES[code]['jp']} {value / count * 100:.0f}%"
+            for code, value in counts.most_common(4)
+        )
+        if previous_codes is not None:
+            changed_cells = previous_codes[mask] != values
+            changed_ratio = float(changed_cells.sum()) / count
+            changed_text = f"{changed_ratio * 100:.1f}%"
+            transitions = Counter(zip(previous_codes[mask][changed_cells], values[changed_cells]))
+            regional_changes.append((review["name"], changed_ratio, transitions))
+        else:
+            changed_text = "比較元なし"
+        status = "合格" if core_ratio >= 0.55 else "要目視確認" if core_ratio >= 0.40 else "要修正"
+        lines.append(
+            f"| {review['name']} | {core_ratio * 100:.1f}% | {changed_text} | {top} | {status} |"
+        )
+
+    if previous_codes is not None:
+        changed = land & (previous_codes != codes)
+        transitions = Counter(zip(previous_codes[changed], codes[changed]))
+        lines.extend(
+            [
+                "",
+                "## 主な全世界共通修正",
+                "",
+                f"- 変更した陸地セル: {int(changed.sum())} / {int(land.sum())} ({changed.sum() / land.sum() * 100:.1f}%)",
+                "",
+                "| 修正前 | 修正後 | セル数 |",
+                "|---|---|---:|",
+            ]
+        )
+        for (old, new), value in transitions.most_common(20):
+            lines.append(
+                f"| `{old}` {BIOMES[old]['jp']} | `{new}` {BIOMES[new]['jp']} | {value} |"
+            )
+        lines.extend(["", "## 地域ごとの主な変更", ""])
+        for name, ratio, transitions in regional_changes:
+            if ratio < 0.005 or not transitions:
+                continue
+            summary = "、".join(
+                f"{BIOMES[old]['jp']}→{BIOMES[new]['jp']} {value}px"
+                for (old, new), value in transitions.most_common(3)
+            )
+            lines.append(f"- **{name}** ({ratio * 100:.1f}%変更): {summary}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def write_json(codes: np.ndarray, path: Path) -> None:
     rows = ["".join(codes[y, x] for x in range(codes.shape[1])) for y in range(codes.shape[0])]
     width = int(codes.shape[1])
@@ -2163,6 +2378,7 @@ def compose_panel(img: Image.Image, counts: Counter[str], title: str) -> Image.I
 
 
 def render(width: int, height: int, json_size: tuple[int, int] | None = (512, 256)) -> dict[str, Path]:
+    ensure_source_data()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     land_mask = draw_shape_file_mask(COUNTRIES, width, height)
     img = render_ecoregions(width, height)
@@ -2202,7 +2418,7 @@ def render(width: int, height: int, json_size: tuple[int, int] | None = (512, 25
     naturalize_raster_steps(
         codes,
         land,
-        {"PLR", "SNW", "TND", "CTG", "TGA", "ICE", "IFD", "GLC", "IDM", "HGL"},
+        {"PLR", "SNW", "TND", "CTG", "TGA", "ICE", "IFD", "GLC", "IDM", "SNM", "HGL"},
         20260717,
     )
     naturalize_raster_steps(
@@ -2253,6 +2469,7 @@ def render(width: int, height: int, json_size: tuple[int, int] | None = (512, 25
     beach_audit_path = OUT_DIR / f"geo_biome_world_beach_audit_{width}x{height}.md"
     shape_audit_path = OUT_DIR / f"geo_biome_world_shape_audit_{width}x{height}.md"
     tibetan_glacier_audit_path = OUT_DIR / f"geo_biome_world_tibetan_glacier_audit_{width}x{height}.md"
+    region_review_path = OUT_DIR / f"geo_biome_world_region_review_{width}x{height}.md"
     total = width * height
     stats_lines = [
         "# Geo Biome World Stats",
@@ -2274,6 +2491,12 @@ def render(width: int, height: int, json_size: tuple[int, int] | None = (512, 25
     write_mountain_audit_report(codes, land_mask, dem, mountain_audit_path)
     write_beach_audit_report(codes, source_codes, land_mask, dem, beach_audit_path)
     write_shape_audit_report(codes, shape_audit_path)
+    write_world_region_review(
+        codes,
+        land_mask,
+        region_review_path,
+        Path(f"/tmp/geo_biome_world_before_global_review.png"),
+    )
     tibetan_glacier_audit_path.write_text(
         "\n".join(
             [
@@ -2306,6 +2529,7 @@ def render(width: int, height: int, json_size: tuple[int, int] | None = (512, 25
     outputs["beach_audit"] = beach_audit_path
     outputs["shape_audit"] = shape_audit_path
     outputs["tibetan_glacier_audit"] = tibetan_glacier_audit_path
+    outputs["region_review"] = region_review_path
     return outputs
 
 

@@ -5,6 +5,39 @@ import { chromium } from "playwright";
 const PORT = 8881;
 const BASE = `http://127.0.0.1:${PORT}`;
 const AUTOSAVE_KEY = "blockland-map-maker-autosave";
+const APP_IDB_NAME = "blockland-map-maker-files";
+const AUTOSAVE_IDB_STORE = "autosave";
+const AUTOSAVE_IDB_KEY = "current";
+
+async function clearAutosaveStorage(page) {
+  await page.evaluate(async ({ lsKey, dbName, store, key }) => {
+    localStorage.removeItem(lsKey);
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open(dbName);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(store)) {
+          db.close();
+          resolve();
+          return;
+        }
+        const tx = db.transaction(store, "readwrite");
+        tx.objectStore(store).delete(key);
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }, {
+    lsKey: AUTOSAVE_KEY,
+    dbName: APP_IDB_NAME,
+    store: AUTOSAVE_IDB_STORE,
+    key: AUTOSAVE_IDB_KEY,
+  });
+}
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function waitForServer(url, timeoutMs = 10000) {
@@ -52,7 +85,7 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
 
   await page.goto(`${BASE}/index.html?test=1`);
-  await page.evaluate((k) => localStorage.removeItem(k), AUTOSAVE_KEY);
+  await clearAutosaveStorage(page);
   await page.reload();
   await page.waitForFunction(() => window.__mapMakerTest?.ready);
   await page.evaluate(() => {
@@ -86,6 +119,37 @@ try {
   await dragCrop(page, 2, 2, 20, 20);
   await page.locator("#selectionCancelBtn").click();
   assert.equal(await page.evaluate(() => window.__mapMakerTest.getTool()), "paint");
+
+  // Layer 2 fill must stop at the layer-1 biome boundary under the cursor.
+  // PLN and FOR are separate biomes but share the same unpainted zone code (___),
+  // so filling on a PLN cell must not spill into the adjacent FOR cells.
+  await page.evaluate(() => {
+    window.__mapMakerTest.setGrids(
+      ["PLNPLNFOR", "PLNPLNFOR", "FORFORFOR"],
+      ["_________", "_________", "_________"],
+    );
+  });
+  await setTool("fill");
+  await page.locator('.palette-row[data-code="EUR"]').click();
+  await paintAt(page, 0, 0);
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(0, 0)), "EUR");
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(1, 1)), "EUR");
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(2, 0)), "___");
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(0, 2)), "___");
+
+  // Two GLC islands separated by FOR must not cross-fill.
+  await page.evaluate(() => {
+    window.__mapMakerTest.setGrids(
+      ["GLCFORGLC", "GLCFORGLC", "GLCFORGLC"],
+      ["_________", "_________", "_________"],
+    );
+  });
+  await page.locator('.palette-row.zone-row[data-code="JPN"]').click();
+  await paintAt(page, 0, 0);
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(0, 0)), "JPN");
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(0, 1)), "JPN");
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(2, 0)), "___");
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getZoneCell(2, 2)), "___");
 
   assert.equal(errors.length, 0, errors.join("; "));
   console.log("layer-paint-e2e: all tests passed");
