@@ -266,7 +266,7 @@ function ensureZoneGrid() {
 }
 
 const AUTOSAVE_KEY = "blockland-map-maker-autosave";
-const AUTOSAVE_VERSION = 2;
+const AUTOSAVE_VERSION = 3;
 const APP_IDB_NAME = "blockland-map-maker-files";
 const APP_IDB_VERSION = 2;
 const BLMAP_IDB_STORE = "handles";
@@ -381,7 +381,230 @@ const els = {
   selectionConfirmActions: document.getElementById("selectionConfirmActions"),
   selectionConfirmBtn: document.getElementById("selectionConfirmBtn"),
   selectionCancelBtn: document.getElementById("selectionCancelBtn"),
+  documentTabList: document.getElementById("documentTabList"),
+  addDocumentTabBtn: document.getElementById("addDocumentTabBtn"),
 };
+
+const DOCUMENT_STATE_KEYS = [
+  "width", "height", "grid", "activeLayer", "zoneGrid", "zoneTransparent", "zoneBiomeFilter",
+  "coverage", "zoom", "guidePoints", "showGrid", "replaceRules", "replacePreviewActive",
+  "selection", "selectInteraction", "pendingSelectionEdit", "cropInteraction", "pendingCrop",
+  "undoStack", "redoStack", "aspectRatioLocked", "aspectRatio",
+];
+const documents = new Map();
+let activeDocumentId = null;
+let documentSequence = 0;
+
+function getActiveDocument() {
+  return activeDocumentId ? documents.get(activeDocumentId) ?? null : null;
+}
+
+function nextDocumentId() {
+  documentSequence += 1;
+  return `map-${Date.now().toString(36)}-${documentSequence.toString(36)}`;
+}
+
+function activeSidebarTab() {
+  return document.querySelector(".sidebar .tab.active")?.dataset.tab || "palette";
+}
+
+function capturePanelState() {
+  return {
+    sidebarTab: activeSidebarTab(),
+    importScale: els.importScale?.value || "1",
+    canvasSizeMode: document.querySelector('input[name="canvasSizeMode"]:checked')?.value || "stretch",
+    noiseRadius: els.noiseRadius?.value || "8",
+    noiseDensity: els.noiseDensity?.value || "35",
+    noiseJitter: els.noiseJitter?.value || "3",
+    fileScrollTop: document.getElementById("fileTab")?.scrollTop || 0,
+    toolsScrollTop: document.getElementById("toolsTab")?.scrollTop || 0,
+  };
+}
+
+function captureDocumentState() {
+  const data = {};
+  for (const key of DOCUMENT_STATE_KEYS) data[key] = state[key];
+  return data;
+}
+
+function saveActiveDocumentState() {
+  const documentRecord = getActiveDocument();
+  if (!documentRecord) return;
+  documentRecord.state = captureDocumentState();
+  documentRecord.panelState = capturePanelState();
+  documentRecord.scrollLeft = wrap.scrollLeft;
+  documentRecord.scrollTop = wrap.scrollTop;
+  documentRecord.fileHandle = blmapFileHandle;
+}
+
+function createBlankDocumentState(width = 256, height = 256) {
+  return {
+    width,
+    height,
+    grid: createGrid(width, height, "OCN"),
+    activeLayer: "biome",
+    zoneGrid: createGrid(width, height, ZONE_UNPAINTED),
+    zoneTransparent: false,
+    zoneBiomeFilter: "",
+    coverage: { dead: [], unpainted: [], showDead: false, checked: 0 },
+    zoom: 4,
+    guidePoints: [],
+    showGrid: false,
+    replaceRules: [],
+    replacePreviewActive: false,
+    selection: null,
+    selectInteraction: null,
+    pendingSelectionEdit: null,
+    cropInteraction: null,
+    pendingCrop: null,
+    undoStack: [],
+    redoStack: [],
+    aspectRatioLocked: false,
+    aspectRatio: width / height,
+  };
+}
+
+function setSidebarTab(tabName) {
+  const requested = document.querySelector(`.sidebar .tab[data-tab="${tabName}"]`);
+  const tab = requested || document.querySelector('.sidebar .tab[data-tab="palette"]');
+  if (!tab) return;
+  document.querySelectorAll(".sidebar .tab").forEach((item) => item.classList.toggle("active", item === tab));
+  document.querySelectorAll(".sidebar .panel").forEach((item) => {
+    item.classList.toggle("active", item.id === `${tab.dataset.tab}Tab`);
+  });
+}
+
+function applyPanelState(panelState = {}) {
+  setSidebarTab(panelState.sidebarTab || "palette");
+  if (els.importScale) els.importScale.value = panelState.importScale || "1";
+  const sizeMode = panelState.canvasSizeMode === "canvas" ? "canvas" : "stretch";
+  const sizeModeInput = document.querySelector(`input[name="canvasSizeMode"][value="${sizeMode}"]`);
+  if (sizeModeInput) sizeModeInput.checked = true;
+  if (els.noiseRadius) els.noiseRadius.value = panelState.noiseRadius || "8";
+  if (els.noiseDensity) els.noiseDensity.value = panelState.noiseDensity || "35";
+  if (els.noiseJitter) els.noiseJitter.value = panelState.noiseJitter || "3";
+  requestAnimationFrame(() => {
+    const filePanel = document.getElementById("fileTab");
+    const toolsPanel = document.getElementById("toolsTab");
+    if (filePanel) filePanel.scrollTop = Number(panelState.fileScrollTop) || 0;
+    if (toolsPanel) toolsPanel.scrollTop = Number(panelState.toolsScrollTop) || 0;
+  });
+}
+
+function renderDocumentTabs() {
+  if (!els.documentTabList) return;
+  els.documentTabList.innerHTML = "";
+  for (const documentRecord of documents.values()) {
+    const item = document.createElement("div");
+    item.className = `document-tab${documentRecord.id === activeDocumentId ? " active" : ""}`;
+    item.setAttribute("role", "presentation");
+
+    const select = document.createElement("button");
+    select.className = "document-tab-select";
+    select.type = "button";
+    select.textContent = documentRecord.title;
+    select.title = documentRecord.title;
+    select.setAttribute("role", "tab");
+    select.setAttribute("aria-selected", documentRecord.id === activeDocumentId ? "true" : "false");
+    select.addEventListener("click", () => activateDocument(documentRecord.id));
+
+    const close = document.createElement("button");
+    close.className = "document-tab-close";
+    close.type = "button";
+    close.textContent = "×";
+    close.title = `${documentRecord.title} を閉じる`;
+    close.setAttribute("aria-label", `${documentRecord.title} を閉じる`);
+    close.addEventListener("click", () => closeDocument(documentRecord.id));
+
+    item.append(select, close);
+    els.documentTabList.appendChild(item);
+  }
+  els.documentTabList.querySelector(".document-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function restoreDocumentState(documentRecord) {
+  for (const key of DOCUMENT_STATE_KEYS) state[key] = documentRecord.state[key];
+  state.isDrawing = false;
+  state.lastCell = null;
+  state.panStart = null;
+  state.wrapScrollStart = null;
+  state.isPinching = false;
+  state.lastCanvasPoint = null;
+  state.lastCanvasPointFloat = null;
+  state.optionKeyHeld = false;
+  blmapFileHandle = documentRecord.fileHandle || null;
+  applyPanelState(documentRecord.panelState);
+  els.zoomRange.value = String(state.zoom);
+  els.showGridToggle.checked = state.showGrid;
+  els.zoneTransToggle.checked = state.zoneTransparent;
+  buildZoneBiomeFilter();
+  if (els.zoneBiomeFilter) els.zoneBiomeFilter.value = state.zoneBiomeFilter || "";
+  updateLayerUi();
+  buildPalette();
+  renderReplaceRules();
+  syncToolUi();
+  syncBrushSizeUi();
+  syncAspectLockButton();
+  syncBlmapPathUi();
+  mapImageData = null;
+  dirtyMapBounds = null;
+  resizeCanvases(false);
+  render();
+  requestAnimationFrame(() => {
+    wrap.scrollLeft = documentRecord.scrollLeft || 0;
+    wrap.scrollTop = documentRecord.scrollTop || 0;
+  });
+}
+
+function activateDocument(id) {
+  if (id === activeDocumentId || !documents.has(id)) return;
+  saveActiveDocumentState();
+  activeDocumentId = id;
+  restoreDocumentState(documents.get(id));
+  renderDocumentTabs();
+  scheduleAutosave();
+}
+
+function openDocumentTab(title, documentState, options = {}) {
+  saveActiveDocumentState();
+  const id = options.id || nextDocumentId();
+  const documentRecord = {
+    id,
+    title: title || `マップ ${documents.size + 1}`,
+    state: documentState,
+    panelState: options.panelState || capturePanelState(),
+    scrollLeft: options.scrollLeft || 0,
+    scrollTop: options.scrollTop || 0,
+    fileHandle: options.fileHandle || null,
+    fileName: options.fileName || null,
+  };
+  documents.set(id, documentRecord);
+  activeDocumentId = id;
+  restoreDocumentState(documentRecord);
+  renderDocumentTabs();
+  scheduleAutosave();
+  return documentRecord;
+}
+
+function closeDocument(id) {
+  const documentRecord = documents.get(id);
+  if (!documentRecord) return;
+  if (!window.confirm(`「${documentRecord.title}」を閉じますか？`)) return;
+  const ids = [...documents.keys()];
+  const index = ids.indexOf(id);
+  const wasActive = id === activeDocumentId;
+  documents.delete(id);
+  idbDeleteHandle(`${BLMAP_HANDLE_KEY}:${id}`).catch(() => {});
+  if (documents.size === 0) {
+    activeDocumentId = null;
+    openDocumentTab("新規マップ", createBlankDocumentState());
+  } else if (wasActive) {
+    activeDocumentId = ids[index + 1] && documents.has(ids[index + 1]) ? ids[index + 1] : ids[index - 1];
+    restoreDocumentState(documents.get(activeDocumentId));
+  }
+  renderDocumentTabs();
+  scheduleAutosave();
+}
 
 function hexToRgb(hex) {
   const value = hex.replace("#", "");
@@ -552,10 +775,10 @@ function setMessage(text) {
   els.message.textContent = text;
 }
 
-function serializeAutosave() {
+function serializeCurrentDocument() {
   sanitizeStateGrid();
   return {
-    version: AUTOSAVE_VERSION,
+    version: 2,
     width: state.width,
     height: state.height,
     size: state.width === state.height ? state.width : undefined,
@@ -575,6 +798,69 @@ function serializeAutosave() {
     noiseRadius: Number(els.noiseRadius.value),
     noiseDensity: Number(els.noiseDensity.value),
     noiseJitter: Number(els.noiseJitter.value),
+    zoneTransparent: state.zoneTransparent,
+    zoneBiomeFilter: state.zoneBiomeFilter,
+    aspectRatioLocked: state.aspectRatioLocked,
+    aspectRatio: state.aspectRatio,
+    panelState: capturePanelState(),
+  };
+}
+
+function serializeDocumentRecord(documentRecord) {
+  const currentId = activeDocumentId;
+  if (documentRecord.id === currentId) return serializeCurrentDocument();
+  const data = documentRecord.state;
+  return {
+    version: 2,
+    width: data.width,
+    height: data.height,
+    size: data.width === data.height ? data.width : undefined,
+    rows: data.grid.map((row) => row.join("")),
+    selectedCode: state.selectedCode,
+    activeLayer: data.activeLayer,
+    selectedZoneCode: state.selectedZoneCode,
+    zoneRows: data.zoneGrid.map((row) => row.join("")),
+    highlight: [...state.highlight],
+    mask: [...state.mask],
+    zoom: data.zoom,
+    brushSize: state.brushSize,
+    tool: state.tool,
+    guidePoints: data.guidePoints,
+    showGrid: data.showGrid,
+    replaceRules: data.replaceRules,
+    noiseRadius: Number(documentRecord.panelState.noiseRadius),
+    noiseDensity: Number(documentRecord.panelState.noiseDensity),
+    noiseJitter: Number(documentRecord.panelState.noiseJitter),
+    zoneTransparent: data.zoneTransparent,
+    zoneBiomeFilter: data.zoneBiomeFilter,
+    aspectRatioLocked: data.aspectRatioLocked,
+    aspectRatio: data.aspectRatio,
+    panelState: documentRecord.panelState,
+  };
+}
+
+function serializeAutosave() {
+  saveActiveDocumentState();
+  if (!documents.size) return serializeCurrentDocument();
+  return {
+    version: AUTOSAVE_VERSION,
+    activeDocumentId,
+    common: {
+      selectedCode: state.selectedCode,
+      selectedZoneCode: state.selectedZoneCode,
+      highlight: [...state.highlight],
+      mask: [...state.mask],
+      tool: state.tool,
+      brushSize: state.brushSize,
+    },
+    documents: [...documents.values()].map((documentRecord) => ({
+      id: documentRecord.id,
+      title: documentRecord.title,
+      fileName: documentRecord.fileName,
+      scrollLeft: documentRecord.scrollLeft,
+      scrollTop: documentRecord.scrollTop,
+      data: serializeDocumentRecord(documentRecord),
+    })),
   };
 }
 
@@ -733,8 +1019,8 @@ function sanitizeStateGrid() {
   );
 }
 
-function applyAutosaveData(data) {
-  if (typeof data.version !== "number" || data.version > AUTOSAVE_VERSION) return false;
+function applyLegacyAutosaveData(data) {
+  if (typeof data.version !== "number" || data.version > 2) return false;
 
   const rows = data.rows;
   if (!Array.isArray(rows) || rows.length === 0) return false;
@@ -782,6 +1068,12 @@ function applyAutosaveData(data) {
   state.tool = TOOL_VALUES.has(data.tool) ? data.tool : "paint";
   state.guidePoints = Array.isArray(data.guidePoints) ? data.guidePoints : [];
   state.showGrid = Boolean(data.showGrid);
+  state.zoneTransparent = Boolean(data.zoneTransparent);
+  state.zoneBiomeFilter = typeof data.zoneBiomeFilter === "string" ? data.zoneBiomeFilter : "";
+  state.aspectRatioLocked = Boolean(data.aspectRatioLocked);
+  state.aspectRatio = Number.isFinite(data.aspectRatio) && data.aspectRatio > 0
+    ? data.aspectRatio
+    : state.width / state.height;
   state.replaceRules = Array.isArray(data.replaceRules)
     ? data.replaceRules.map(normalizeReplaceRule).filter(Boolean)
     : [];
@@ -794,6 +1086,53 @@ function applyAutosaveData(data) {
   if (typeof data.noiseDensity === "number") els.noiseDensity.value = String(data.noiseDensity);
   if (typeof data.noiseJitter === "number") els.noiseJitter.value = String(data.noiseJitter);
   els.showGridToggle.checked = state.showGrid;
+  return true;
+}
+
+function applyAutosaveData(data) {
+  if (data?.version !== AUTOSAVE_VERSION || !Array.isArray(data.documents)) {
+    return applyLegacyAutosaveData(data);
+  }
+
+  const common = data.common || {};
+  const restoredDocuments = [];
+  for (const serialized of data.documents) {
+    if (!serialized?.data || !applyLegacyAutosaveData(serialized.data)) continue;
+    restoredDocuments.push({
+      id: typeof serialized.id === "string" ? serialized.id : nextDocumentId(),
+      title: typeof serialized.title === "string" ? serialized.title : `マップ ${restoredDocuments.length + 1}`,
+      state: captureDocumentState(),
+      panelState: serialized.data.panelState || {},
+      scrollLeft: Number(serialized.scrollLeft) || 0,
+      scrollTop: Number(serialized.scrollTop) || 0,
+      fileHandle: null,
+      fileName: typeof serialized.fileName === "string" ? serialized.fileName : null,
+    });
+  }
+  if (!restoredDocuments.length) return false;
+
+  const selectedCode = migrateLegacyCode(common.selectedCode);
+  state.selectedCode = biomeByCode.has(selectedCode) ? selectedCode : "PLN";
+  state.selectedZoneCode = zoneByCode.has(common.selectedZoneCode) ? common.selectedZoneCode : "NEW";
+  state.highlight = new Set(
+    Array.isArray(common.highlight)
+      ? common.highlight.map((code) => migrateLegacyCode(code)).filter((code) => biomeByCode.has(code))
+      : [],
+  );
+  state.mask = new Set(
+    Array.isArray(common.mask)
+      ? common.mask.map((code) => migrateLegacyCode(code)).filter((code) => biomeByCode.has(code))
+      : [],
+  );
+  state.tool = TOOL_VALUES.has(common.tool) ? common.tool : "paint";
+  state.brushSize = normalizeBrushSize(common.brushSize);
+
+  documents.clear();
+  for (const documentRecord of restoredDocuments) documents.set(documentRecord.id, documentRecord);
+  activeDocumentId = documents.has(data.activeDocumentId) ? data.activeDocumentId : restoredDocuments[0].id;
+  const active = documents.get(activeDocumentId);
+  for (const key of DOCUMENT_STATE_KEYS) state[key] = active.state[key];
+  applyPanelState(active.panelState);
   return true;
 }
 
@@ -2680,38 +3019,11 @@ function fitToView() {
   resizeCanvases();
 }
 
-function isMapBlankOcean() {
-  if (!state.grid.length) return true;
-  for (const row of state.grid) {
-    for (const code of row) {
-      if (code !== "OCN") return false;
-    }
-  }
-  return true;
-}
-
 function newMap(width, height = width) {
-  const sameSize = state.width === width && state.height === height;
-  if (!isMapBlankOcean() || !sameSize) {
-    const ok = window.confirm(
-      `現在のマップ（${state.width}×${state.height}）を破棄し、${width}×${height} の海のみのマップを作成します。\nよろしいですか？`,
-    );
-    if (!ok) {
-      setMessage("新規キャンバス作成をキャンセルしました");
-      return;
-    }
-  }
-  pushUndo();
-  state.width = width;
-  state.height = height;
-  state.grid = createGrid(width, height, "OCN");
-  state.zoneGrid = [];
-  ensureZoneGrid();
-  state.guidePoints = [];
-  clearSelection();
+  openDocumentTab(`新規 ${width}×${height}`, createBlankDocumentState(width, height));
   fitToView();
   render();
-  setMessage(`${width}×${height} の海マップを作成（ズーム ${state.zoom}x）`);
+  setMessage(`${width}×${height} の海マップを新しいタブに作成（ズーム ${state.zoom}x）`);
 }
 
 function clearCurrentMap() {
@@ -2729,7 +3041,7 @@ function clearCurrentMap() {
   setMessage(`${state.width}×${state.height} をクリアしました`);
 }
 
-function importJson(text, scaleMode = els.importScale.value) {
+function importJson(text, scaleMode = els.importScale.value, title = "JSONマップ") {
   const data = JSON.parse(text);
   const rows = data.rows;
   if (!Array.isArray(rows) || rows.length === 0) throw new Error("rows がありません");
@@ -2778,15 +3090,10 @@ function importJson(text, scaleMode = els.importScale.value) {
   }
   const { width: sourceWidth, height: sourceHeight } = geometry;
   const { grid, width, height } = applyImportScale(rowsToGrid(normalizedRows), scaleMode);
-  pushUndo();
-  state.width = width;
-  state.height = height;
-  state.grid = grid;
+  const documentState = createBlankDocumentState(width, height);
+  documentState.grid = grid;
+  openDocumentTab(title, documentState);
   sanitizeStateGrid();
-  ensureZoneGrid();
-  state.guidePoints = [];
-  clearSelection();
-  resizeCanvases();
   render();
   const scaleLabel = scaleMode === "2" ? "・2倍拡大" : scaleMode === "half" ? "・半分" : "";
   const recoverLabel = recoveredMixed ? "・旧コード混在を修復" : "";
@@ -2823,13 +3130,9 @@ function importImage(file, scaleMode = els.importScale.value) {
         }
       }
       const { grid, width, height } = applyImportScale(source, scaleMode);
-      pushUndo();
-      state.width = width;
-      state.height = height;
-      state.grid = grid;
-      state.guidePoints = [];
-      clearSelection();
-      resizeCanvases();
+      const documentState = createBlankDocumentState(width, height);
+      documentState.grid = grid;
+      openDocumentTab(file.name || "画像マップ", documentState);
       render();
       const scaleLabel = scaleMode === "2" ? "・2倍拡大" : scaleMode === "half" ? "・半分" : "";
       setMessage(`画像読込: ${sourceWidth}×${sourceHeight} → ${width}×${height}${scaleLabel}`);
@@ -3000,7 +3303,6 @@ function importZoneJson(text) {
 
 // ---- .blmap パス記憶（File System Access API + IndexedDB）----
 const BLMAP_HANDLE_KEY = "blmap";
-const BLMAP_NAME_KEY = "blockland-map-maker-blmap-name";
 const BLMAP_PICKER_TYPES = [
   {
     description: "Blockland map set",
@@ -3040,8 +3342,9 @@ async function ensureFileHandlePermission(handle, mode = "readwrite") {
 }
 
 function syncBlmapPathUi() {
+  const documentRecord = getActiveDocument();
   const name = blmapFileHandle?.name
-    || localStorage.getItem(BLMAP_NAME_KEY)
+    || documentRecord?.fileName
     || null;
   if (els.blmapPathInfo) {
     els.blmapPathInfo.textContent = name || "未設定";
@@ -3053,17 +3356,20 @@ function syncBlmapPathUi() {
 
 async function rememberBlmapHandle(handle) {
   blmapFileHandle = handle || null;
+  const documentRecord = getActiveDocument();
+  if (documentRecord) {
+    documentRecord.fileHandle = blmapFileHandle;
+    documentRecord.fileName = handle?.name || (handle ? defaultBlmapFilename() : null);
+  }
   if (handle) {
-    localStorage.setItem(BLMAP_NAME_KEY, handle.name || defaultBlmapFilename());
     try {
-      await idbSetHandle(BLMAP_HANDLE_KEY, handle);
+      await idbSetHandle(`${BLMAP_HANDLE_KEY}:${activeDocumentId}`, handle);
     } catch (error) {
       console.warn("blmap handle persist failed", error);
     }
   } else {
-    localStorage.removeItem(BLMAP_NAME_KEY);
     try {
-      await idbDeleteHandle(BLMAP_HANDLE_KEY);
+      await idbDeleteHandle(`${BLMAP_HANDLE_KEY}:${activeDocumentId}`);
     } catch (error) {
       console.warn("blmap handle clear failed", error);
     }
@@ -3077,11 +3383,17 @@ async function restoreBlmapHandle() {
     return;
   }
   try {
-    const handle = await idbGetHandle(BLMAP_HANDLE_KEY);
-    if (handle) {
-      blmapFileHandle = handle;
-      if (handle.name) localStorage.setItem(BLMAP_NAME_KEY, handle.name);
+    for (const documentRecord of documents.values()) {
+      let handle = await idbGetHandle(`${BLMAP_HANDLE_KEY}:${documentRecord.id}`);
+      if (!handle && documentRecord.id === activeDocumentId) {
+        handle = await idbGetHandle(BLMAP_HANDLE_KEY);
+      }
+      if (handle) {
+        documentRecord.fileHandle = handle;
+        documentRecord.fileName = handle.name || documentRecord.fileName;
+      }
     }
+    blmapFileHandle = getActiveDocument()?.fileHandle || null;
   } catch (error) {
     console.warn("blmap handle restore failed", error);
   }
@@ -3133,7 +3445,7 @@ async function exportMapSet() {
     }
     if (supportsBlmapFilePicker()) {
       const handle = await window.showSaveFilePicker({
-        suggestedName: localStorage.getItem(BLMAP_NAME_KEY) || defaultBlmapFilename(),
+        suggestedName: getActiveDocument()?.fileName || defaultBlmapFilename(),
         types: BLMAP_PICKER_TYPES,
       });
       await saveMapSetToHandle(handle, { asNew: true });
@@ -3146,10 +3458,10 @@ async function exportMapSet() {
     }
     console.warn("blmap save failed, falling back to download", error);
   }
-  const name = localStorage.getItem(BLMAP_NAME_KEY) || defaultBlmapFilename();
+  const name = getActiveDocument()?.fileName || defaultBlmapFilename();
   const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
   downloadUrl(URL.createObjectURL(blob), name, true);
-  localStorage.setItem(BLMAP_NAME_KEY, name);
+  if (getActiveDocument()) getActiveDocument().fileName = name;
   syncBlmapPathUi();
   setMessage(`プロジェクトをダウンロードしました（${name}）。対応ブラウザでは上書き保存が使えます。`);
 }
@@ -3160,7 +3472,7 @@ async function exportMapSetAs() {
   try {
     if (supportsBlmapFilePicker()) {
       const handle = await window.showSaveFilePicker({
-        suggestedName: blmapFileHandle?.name || localStorage.getItem(BLMAP_NAME_KEY) || defaultBlmapFilename(),
+        suggestedName: blmapFileHandle?.name || getActiveDocument()?.fileName || defaultBlmapFilename(),
         types: BLMAP_PICKER_TYPES,
       });
       await saveMapSetToHandle(handle, { asNew: true });
@@ -3176,13 +3488,13 @@ async function exportMapSetAs() {
   const name = defaultBlmapFilename();
   const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
   downloadUrl(URL.createObjectURL(blob), name, true);
-  localStorage.setItem(BLMAP_NAME_KEY, name);
+  if (getActiveDocument()) getActiveDocument().fileName = name;
   syncBlmapPathUi();
   setMessage(`プロジェクトをダウンロードしました（${name}）`);
 }
 
 // .blmap を読み込み、レイヤー1・2を同時に復元。成功時 true。
-function importMapSet(text) {
+function importMapSet(text, title = "プロジェクト") {
   let data;
   try {
     data = JSON.parse(text);
@@ -3202,10 +3514,9 @@ function importMapSet(text) {
     setMessage(".blmap のバイオーム形式を認識できません。");
     return false;
   }
-  pushUndo();
-  state.width = geometry.width;
-  state.height = geometry.height;
-  state.grid = rowsToGrid(normalized);
+  const documentState = createBlankDocumentState(geometry.width, geometry.height);
+  documentState.grid = rowsToGrid(normalized);
+  openDocumentTab(title, documentState, { fileName: title });
   sanitizeStateGrid();
   // zone をレイヤー2へ(寸法一致・3文字。不一致セルは未塗り)
   state.zoneGrid = [];
@@ -3234,7 +3545,7 @@ async function importMapSetFromHandle(handle) {
     return;
   }
   const file = await handle.getFile();
-  const ok = importMapSet(await file.text());
+  const ok = importMapSet(await file.text(), file.name || "プロジェクト.blmap");
   if (ok) await rememberBlmapHandle(handle);
 }
 
@@ -3298,14 +3609,17 @@ function applyNoise() {
 }
 
 function bindEvents() {
-  document.querySelectorAll(".tab").forEach((tab) => {
+  document.querySelectorAll(".sidebar .tab").forEach((tab) => {
     tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
-      document.querySelectorAll(".panel").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".sidebar .tab").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".sidebar .panel").forEach((item) => item.classList.remove("active"));
       tab.classList.add("active");
       document.getElementById(`${tab.dataset.tab}Tab`).classList.add("active");
+      scheduleAutosave();
     });
   });
+
+  els.addDocumentTabBtn?.addEventListener("click", () => newMap(256, 256));
 
   document.querySelectorAll("[data-new-width]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3317,7 +3631,7 @@ function bindEvents() {
     if (!file) return;
     try {
       if (file.name.toLowerCase().endsWith(".json") || file.type.includes("json")) {
-        importJson(await file.text());
+        importJson(await file.text(), els.importScale.value, file.name);
       } else {
         importImage(file);
       }
@@ -3368,10 +3682,10 @@ function bindEvents() {
       const file = event.target.files[0];
       if (!file) return;
       try {
-        const ok = importMapSet(await file.text());
+        const ok = importMapSet(await file.text(), file.name || "プロジェクト.blmap");
         if (ok) {
-          // input 経由では上書きハンドルは取れないが、ファイル名は覚えておく
-          localStorage.setItem(BLMAP_NAME_KEY, file.name || defaultBlmapFilename());
+          // input 経由では上書きハンドルは取れないが、ファイル名はタブごとに覚えておく
+          if (getActiveDocument()) getActiveDocument().fileName = file.name || defaultBlmapFilename();
           syncBlmapPathUi();
         }
       } catch (error) {
@@ -3771,6 +4085,20 @@ async function init() {
     state.grid = createGrid(state.width, state.height, "OCN");
   }
   ensureZoneGrid();
+  if (!documents.size) {
+    const id = nextDocumentId();
+    documents.set(id, {
+      id,
+      title: restored ? "復元したマップ" : "新規マップ",
+      state: captureDocumentState(),
+      panelState: capturePanelState(),
+      scrollLeft: 0,
+      scrollTop: 0,
+      fileHandle: null,
+      fileName: null,
+    });
+    activeDocumentId = id;
+  }
   updateLayerUi();
   buildPalette();
   buildZoneBiomeFilter();
@@ -3780,6 +4108,7 @@ async function init() {
   syncBrushSizeUi();
   resizeCanvases();
   render();
+  renderDocumentTabs();
   restoreBlmapHandle().catch((error) => console.warn("blmap path restore failed", error));
   setMessage(restored ? "前回の作業を復元しました" : "準備完了");
   if (new URLSearchParams(location.search).has("test")) {
@@ -3802,6 +4131,12 @@ async function init() {
       getTool: () => state.tool,
       getBrushSize: () => state.brushSize,
       getZoom: () => state.zoom,
+      getTabs: () => [...documents.values()].map((documentRecord) => ({
+        id: documentRecord.id,
+        title: documentRecord.title,
+        active: documentRecord.id === activeDocumentId,
+      })),
+      activateTab: (id) => activateDocument(id),
     };
   }
 }
