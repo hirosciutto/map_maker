@@ -4,9 +4,9 @@ import {
   getBrushShape,
   normalizeBrushSize,
   PEN_BRUSH_SIZES,
-} from "./brush-shapes.js";
-import { HABITAT } from "./habitat-data.js";
-import { buildCoverage, findDead, repaint as repaintCoverage } from "./coverage-logic.js";
+} from "./brush-shapes.js?v=4";
+import { HABITAT } from "./habitat-data.js?v=4";
+import { buildCoverage, findDead, repaint as repaintCoverage } from "./coverage-logic.js?v=4";
 import {
   applySelectionContentReplace,
   applySelectionMove,
@@ -28,13 +28,13 @@ import {
   scaleEntries,
   selectionBounds,
   selectionMapsEqual,
-} from "./lasso-logic.js";
+} from "./lasso-logic.js?v=4";
 import {
   chunkString,
   detectMapGeometry,
   recoverMixedCodeRows,
   sanitizeGridCodes,
-} from "./map-io.js";
+} from "./map-io.js?v=4";
 import {
   ADJACENT_REPLACE_TARGET,
   LAND_SELECTOR,
@@ -46,7 +46,7 @@ import {
   hasAdjacentBiome as hasAdjacentBiomeAt,
   isFamilySelector,
   makeFamilySelector,
-} from "./replace-logic.js";
+} from "./replace-logic.js?v=4";
 
 // バイオーム定義の追加フィールド（配置の基準）:
 //   category    : 地形カテゴリ（hub/grassland/forest/jungle/mountain/alpine/arid/frozen/wetland/coastal）
@@ -298,7 +298,7 @@ const state = {
   zoneTransparent: false,
   zoneBiomeFilter: "", // "" = 制限なし。biomeコードを入れるとそのバイオームのセルにのみ塗れる
 
-  coverage: { dead: [], unpainted: [], showDead: false, checked: 0 },
+  coverage: { dead: [], unpainted: [], showDead: false, checked: 0, byPair: {} },
   highlight: new Set(),
   mask: new Set(),
   zoom: 4,
@@ -394,6 +394,11 @@ const DOCUMENT_STATE_KEYS = [
 const documents = new Map();
 let activeDocumentId = null;
 let documentSequence = 0;
+const DOCUMENT_TAB_HOVER_DELAY = 1000;
+let selectionTabHoverTimer = null;
+let selectionTabHoverId = null;
+let selectionTabHoverPoint = null;
+let crossTabSelectionDrag = null;
 
 function getActiveDocument() {
   return activeDocumentId ? documents.get(activeDocumentId) ?? null : null;
@@ -446,7 +451,7 @@ function createBlankDocumentState(width = 256, height = 256) {
     zoneGrid: createGrid(width, height, ZONE_UNPAINTED),
     zoneTransparent: false,
     zoneBiomeFilter: "",
-    coverage: { dead: [], unpainted: [], showDead: false, checked: 0 },
+    coverage: { dead: [], unpainted: [], showDead: false, checked: 0, byPair: {} },
     zoom: 4,
     guidePoints: [],
     showGrid: false,
@@ -497,6 +502,7 @@ function renderDocumentTabs() {
   for (const documentRecord of documents.values()) {
     const item = document.createElement("div");
     item.className = `document-tab${documentRecord.id === activeDocumentId ? " active" : ""}`;
+    item.dataset.documentId = documentRecord.id;
     item.setAttribute("role", "presentation");
 
     const select = document.createElement("button");
@@ -522,6 +528,26 @@ function renderDocumentTabs() {
   els.documentTabList.querySelector(".document-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+function clearSelectionTabHover() {
+  clearTimeout(selectionTabHoverTimer);
+  selectionTabHoverTimer = null;
+  selectionTabHoverId = null;
+  selectionTabHoverPoint = null;
+  els.documentTabList?.querySelectorAll(".document-tab.drag-hover").forEach((item) => {
+    item.classList.remove("drag-hover");
+  });
+}
+
+function syncCoverageUi() {
+  if (els.coverageShowToggle) els.coverageShowToggle.checked = Boolean(state.coverage.showDead);
+  if (!state.coverage.checked && !state.coverage.dead.length && !state.coverage.unpainted.length) {
+    if (els.coverageResult) els.coverageResult.textContent = "";
+    if (els.coverageFixBtn) els.coverageFixBtn.disabled = true;
+    return;
+  }
+  renderCoverageResult(state.coverage);
+}
+
 function restoreDocumentState(documentRecord) {
   for (const key of DOCUMENT_STATE_KEYS) state[key] = documentRecord.state[key];
   state.isDrawing = false;
@@ -539,12 +565,17 @@ function restoreDocumentState(documentRecord) {
   els.zoneTransToggle.checked = state.zoneTransparent;
   buildZoneBiomeFilter();
   if (els.zoneBiomeFilter) els.zoneBiomeFilter.value = state.zoneBiomeFilter || "";
+  if (state.activeLayer === "zone" && !new Set(["paint", "fill", "picker", "pan"]).has(state.tool)) {
+    state.tool = "paint";
+  }
   updateLayerUi();
   buildPalette();
   renderReplaceRules();
   syncToolUi();
   syncBrushSizeUi();
   syncAspectLockButton();
+  syncSelectionConfirmUi();
+  syncCoverageUi();
   syncBlmapPathUi();
   mapImageData = null;
   dirtyMapBounds = null;
@@ -1670,7 +1701,9 @@ function clearPendingSelectionEdit({ silent = false } = {}) {
     syncSelectionConfirmUi();
     return;
   }
+  const wasCrossTabTransfer = Boolean(state.pendingSelectionEdit.crossTabTransfer);
   state.pendingSelectionEdit = null;
+  if (wasCrossTabTransfer) state.selection = null;
   syncSelectionConfirmUi();
   if (!silent) setMessage("変形をキャンセルしました");
 }
@@ -1825,6 +1858,10 @@ function cancelPendingSelectionEdit() {
 function confirmPendingSelectionEdit() {
   const pending = state.pendingSelectionEdit;
   if (!pending?.cells || !state.selection) return;
+  if (pending.crossTabTransfer) {
+    confirmCrossTabSelectionTransfer(pending);
+    return;
+  }
   state.pendingSelectionEdit = null;
   syncSelectionConfirmUi();
   pushUndo();
@@ -1844,6 +1881,64 @@ function confirmPendingSelectionEdit() {
   if (result.sourceFilled > 0) parts.push(`元位置 ${result.sourceFilled} マスを周囲で補完`);
   if (result.stayed > 0) parts.push(`${result.stayed} マスは移動不可`);
   setMessage(parts.join("、"));
+  flushAutosave();
+}
+
+function confirmCrossTabSelectionTransfer(pending) {
+  const transfer = pending.crossTabTransfer;
+  const sourceDocument = documents.get(transfer.sourceDocumentId);
+  if (!sourceDocument || sourceDocument.id === activeDocumentId) {
+    setMessage("移動元のタブが見つからないため確定できません");
+    return;
+  }
+
+  const targetCells = pending.cells;
+  const canPlaceAll = [...targetCells.keys()].every((key) => {
+    const [x, y] = key.split(",").map(Number);
+    return canPaint(x, y);
+  });
+  if (!canPlaceAll) {
+    setMessage("移動先がキャンバス外またはマスク中です。配置を調整してください");
+    return;
+  }
+
+  pushUndo();
+  const sourceState = sourceDocument.state;
+  sourceState.undoStack.push({
+    layer: "biome",
+    snapshot: sourceState.grid.map((row) => row.join("")).join("\n"),
+  });
+  if (sourceState.undoStack.length > 80) sourceState.undoStack.shift();
+  sourceState.redoStack.length = 0;
+
+  const inserted = applySelectionContentReplace(
+    state.grid,
+    new Map(),
+    targetCells,
+    mapDims(),
+    (x, y) => canPaint(x, y),
+  );
+  const removed = applySelectionContentReplace(
+    sourceState.grid,
+    transfer.sourceCells,
+    new Map(),
+    { width: sourceState.width, height: sourceState.height },
+    (x, y) => x >= 0 && y >= 0 && x < sourceState.width && y < sourceState.height,
+  );
+  sourceState.grid = removed.grid;
+  sourceState.selection = null;
+  sourceState.selectInteraction = null;
+  sourceState.pendingSelectionEdit = null;
+
+  state.grid = inserted.grid;
+  state.selection = {
+    cells: inserted.cells,
+    entries: entriesFromCells(inserted.cells),
+  };
+  state.pendingSelectionEdit = null;
+  syncSelectionConfirmUi();
+  render();
+  setMessage(`「${transfer.sourceTitle}」から ${inserted.moved} マス移動しました`);
   flushAutosave();
 }
 
@@ -1936,6 +2031,113 @@ function getDisplayedSelectionCells() {
   return working.cells;
 }
 
+function updateSelectionTabHover(event) {
+  if (!state.isDrawing || state.tool !== "select" || state.selectInteraction?.type !== "move") {
+    clearSelectionTabHover();
+    return;
+  }
+  const pointed = document.elementFromPoint(event.clientX, event.clientY);
+  const tab = pointed instanceof Element ? pointed.closest(".document-tab") : null;
+  const targetId = tab?.dataset.documentId;
+  if (!targetId || targetId === activeDocumentId) {
+    clearSelectionTabHover();
+    return;
+  }
+  const targetDocument = documents.get(targetId);
+  if (!targetDocument || targetDocument.state.pendingSelectionEdit || targetDocument.state.pendingCrop) {
+    clearSelectionTabHover();
+    if (targetDocument) setMessage("確定待ちの操作があるタブへは移動できません");
+    return;
+  }
+
+  selectionTabHoverPoint = { clientX: event.clientX, clientY: event.clientY };
+  if (selectionTabHoverId === targetId) return;
+  clearSelectionTabHover();
+  selectionTabHoverId = targetId;
+  selectionTabHoverPoint = { clientX: event.clientX, clientY: event.clientY };
+  tab.classList.add("drag-hover");
+  selectionTabHoverTimer = setTimeout(() => {
+    const point = selectionTabHoverPoint;
+    if (!point || selectionTabHoverId !== targetId) return;
+    switchSelectionDragToDocument(targetId, point);
+  }, DOCUMENT_TAB_HOVER_DELAY);
+}
+
+function switchSelectionDragToDocument(targetId, pointer) {
+  const targetDocument = documents.get(targetId);
+  const displayed = getDisplayedSelectionCells();
+  if (!targetDocument || !displayed?.size || targetId === activeDocumentId) {
+    clearSelectionTabHover();
+    return;
+  }
+
+  const sourcePoint = canvasPoint(pointer);
+  const relativeEntries = [...displayed.entries()].map(([key, code]) => {
+    const [x, y] = key.split(",").map(Number);
+    return { dx: x - sourcePoint.x, dy: y - sourcePoint.y, code };
+  });
+  if (!crossTabSelectionDrag) {
+    const sourceDocument = getActiveDocument();
+    if (!sourceDocument || !state.selection?.cells.size) return;
+    crossTabSelectionDrag = {
+      sourceDocumentId: sourceDocument.id,
+      sourceTitle: sourceDocument.title,
+      sourceCells: new Map(state.selection.cells),
+    };
+  } else if (activeDocumentId !== crossTabSelectionDrag.sourceDocumentId) {
+    state.selection = null;
+    state.pendingSelectionEdit = null;
+  }
+
+  state.selectInteraction = null;
+  state.isDrawing = false;
+  clearSelectionTabHover();
+  activateDocument(targetId);
+  if (state.activeLayer !== "biome") setActiveLayer("biome");
+  state.tool = "select";
+  syncToolUi();
+
+  const targetPoint = canvasPoint(pointer);
+  const baseCells = new Map();
+  for (const entry of relativeEntries) {
+    baseCells.set(`${targetPoint.x + entry.dx},${targetPoint.y + entry.dy}`, entry.code);
+  }
+  state.selection = {
+    cells: baseCells,
+    entries: entriesFromCells(baseCells),
+  };
+  state.pendingSelectionEdit = null;
+  state.selectInteraction = {
+    type: "move",
+    grab: targetPoint,
+    offset: { dx: 0, dy: 0 },
+    baseCells,
+    baseEntries: entriesFromCells(baseCells),
+  };
+  state.isDrawing = true;
+  renderGuide();
+  setMessage(`「${targetDocument.title}」へ切り替えました。そのまま配置してください`);
+}
+
+function finishCrossTabSelectionDrag() {
+  if (!crossTabSelectionDrag || activeDocumentId === crossTabSelectionDrag.sourceDocumentId) return false;
+  const cells = getDisplayedSelectionCells();
+  if (!cells?.size) return false;
+  state.pendingSelectionEdit = {
+    cells: new Map(cells),
+    entries: entriesFromCells(cells),
+    crossTabTransfer: crossTabSelectionDrag,
+  };
+  crossTabSelectionDrag = null;
+  state.selectInteraction = null;
+  state.isDrawing = false;
+  state.lastCell = null;
+  syncSelectionConfirmUi();
+  renderGuide();
+  setMessage("別タブへの移動を確認: ○で確定、×でキャンセル");
+  return true;
+}
+
 function renderSelectionBox() {
   if (!state.selection || state.selectInteraction?.type === "lasso") return;
   const geometry = getSelectionBoxGeometry();
@@ -1993,7 +2195,7 @@ function renderSelection() {
   const step = state.zoom;
   const transforming = isSelectionTransforming();
 
-  if (transforming && state.selection) {
+  if (transforming && state.selection && !state.pendingSelectionEdit?.crossTabTransfer) {
     for (const key of state.selection.cells.keys()) {
       if (cells.has(key)) continue;
       const [x, y] = key.split(",").map(Number);
@@ -2823,6 +3025,7 @@ function runCoverageCheck() {
   state.coverage.dead = r.dead;
   state.coverage.unpainted = r.unpainted;
   state.coverage.checked = r.checked;
+  state.coverage.byPair = r.byPair;
   renderCoverageResult(r);
   render();
 }
@@ -2839,12 +3042,13 @@ function renderCoverageResult(r) {
   if (deadN === 0) {
     parts.push(`<div class="cov-ok">✓ デッドなし${unpN ? "(塗り済みの陸は全て動物が出現)" : `(陸 ${r.checked} px すべてに動物が出現)`}</div>`);
   } else {
-    const pairs = Object.entries(r.byPair).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const byPair = r.byPair || {};
+    const pairs = Object.entries(byPair).sort((a, b) => b[1] - a[1]).slice(0, 8);
     const rows = pairs.map(([k, n]) => `<div class="cov-row"><span>${k}</span><span>${n}</span></div>`).join("");
     parts.push(
       `<div class="cov-bad">⚠ デッド ${deadN} px(塗り済みだが動物なし)</div>` +
       `<div class="cov-sub">出現しない (biome×zone):</div>${rows}` +
-      (pairs.length < Object.keys(r.byPair).length ? `<div class="cov-sub">…他 ${Object.keys(r.byPair).length - pairs.length} 組</div>` : ""),
+      (pairs.length < Object.keys(byPair).length ? `<div class="cov-sub">…他 ${Object.keys(byPair).length - pairs.length} 組</div>` : ""),
     );
   }
   el.innerHTML = parts.join("");
@@ -3946,6 +4150,7 @@ function bindEvents() {
     state.lastCanvasPointFloat = canvasPointFloat(event);
     els.cursorInfo.textContent = `x:${point.x} y:${point.y}`;
     syncCanvasCursor();
+    updateSelectionTabHover(event);
     if (state.isPinching) return;
     if (!state.isDrawing || isOptionPickActive(event)) return;
     if (state.tool === "pan") {
@@ -4005,7 +4210,9 @@ function bindEvents() {
     state.lastCell = point;
   });
 
-  canvas.addEventListener("pointerup", () => {
+  canvas.addEventListener("pointerup", (event) => {
+    clearSelectionTabHover();
+    if (finishCrossTabSelectionDrag()) return;
     if (state.cropInteraction) {
       const rect = normalizeCropRect(state.cropInteraction.start, state.cropInteraction.current);
       state.cropInteraction = null;
@@ -4029,6 +4236,16 @@ function bindEvents() {
       return;
     }
     if (state.selectInteraction?.type === "move") {
+      const rect = canvas.getBoundingClientRect();
+      const insideCanvas = event.clientX >= rect.left && event.clientX <= rect.right
+        && event.clientY >= rect.top && event.clientY <= rect.bottom;
+      if (!insideCanvas) {
+        state.selectInteraction = null;
+        state.isDrawing = false;
+        state.lastCell = null;
+        renderGuide();
+        return;
+      }
       bakePendingFromDisplayed();
       state.selectInteraction = null;
       state.isDrawing = false;
@@ -4064,6 +4281,7 @@ function bindEvents() {
     if (state.optionKeyHeld) syncCanvasCursor();
   });
   canvas.addEventListener("pointerleave", () => {
+    if (state.tool === "select" && state.selectInteraction?.type === "move" && state.isDrawing) return;
     const wasDrawing = state.isDrawing;
     state.isDrawing = false;
     state.lastCell = null;
@@ -4074,6 +4292,10 @@ function bindEvents() {
       flushDirtyMapRender();
       flushAutosave();
     }
+  });
+  canvas.addEventListener("pointercancel", () => {
+    clearSelectionTabHover();
+    crossTabSelectionDrag = null;
   });
 }
 
@@ -4131,6 +4353,34 @@ async function init() {
       getTool: () => state.tool,
       getBrushSize: () => state.brushSize,
       getZoom: () => state.zoom,
+      setZoom: (zoom) => {
+        state.zoom = Math.min(32, Math.max(1, Math.round(Number(zoom))));
+        els.zoomRange.value = String(state.zoom);
+        resizeCanvases(false);
+        render();
+      },
+      setBiomeRows: (rows) => {
+        state.height = rows.length;
+        state.width = rows[0].length / 3;
+        state.grid = rows.map((row) => chunkString(row, 3));
+        state.zoneGrid = createGrid(state.width, state.height, ZONE_UNPAINTED);
+        state.activeLayer = "biome";
+        state.selection = null;
+        state.pendingSelectionEdit = null;
+        updateLayerUi();
+        buildPalette();
+        resizeCanvases();
+        render();
+      },
+      selectCells: (points) => {
+        const keys = points.map(({ x, y }) => `${x},${y}`);
+        const cells = buildSelectionCells(keys, state.grid);
+        state.selection = { cells, entries: entriesFromCells(cells) };
+        state.pendingSelectionEdit = null;
+        state.tool = "select";
+        syncToolUi();
+        renderGuide();
+      },
       getTabs: () => [...documents.values()].map((documentRecord) => ({
         id: documentRecord.id,
         title: documentRecord.title,

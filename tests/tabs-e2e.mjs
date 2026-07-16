@@ -30,7 +30,7 @@ try {
   await waitForServer();
   browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
-  await page.goto(`${BASE}/index.html`);
+  await page.goto(`${BASE}/index.html?test`);
   await page.evaluate(async (dbName) => {
     localStorage.clear();
     await new Promise((resolve) => {
@@ -46,7 +46,7 @@ try {
   await page.locator("#zoomRange").fill("6");
   await page.locator("#showGridToggle").check();
   await page.getByRole("button", { name: "パレット" }).click();
-  await page.locator('input[name="tool"][value="fill"]').check();
+  await page.locator('.tool-option:has(input[name="tool"][value="fill"])').click();
 
   await page.getByRole("button", { name: "新しいマップ" }).click();
   assert.equal(await page.locator(".document-tab").count(), 2);
@@ -74,6 +74,49 @@ try {
   assert.equal(await page.locator("#zoomRange").inputValue(), "3");
   assert.equal(await page.locator("#layerZoneBtn").getAttribute("class"), "layer-btn active");
   assert.equal(await page.locator('input[name="tool"]:checked').getAttribute("value"), "fill");
+
+  const tabs = await page.evaluate(() => window.__mapMakerTest.getTabs());
+  const sourceTab = tabs[0];
+  const targetTab = tabs[1];
+  const oceanRow = "OCN".repeat(8);
+  await page.evaluate(({ targetId, rows }) => {
+    window.__mapMakerTest.activateTab(targetId);
+    window.__mapMakerTest.setBiomeRows(rows);
+    window.__mapMakerTest.setZoom(20);
+  }, { targetId: targetTab.id, rows: Array(8).fill(oceanRow) });
+  await page.evaluate(({ sourceId, rows }) => {
+    window.__mapMakerTest.activateTab(sourceId);
+    window.__mapMakerTest.setBiomeRows(rows);
+    window.__mapMakerTest.setZoom(20);
+    window.__mapMakerTest.selectCells([{ x: 3, y: 3 }]);
+  }, {
+    sourceId: sourceTab.id,
+    rows: Array.from({ length: 8 }, (_, y) => (
+      y === 3 ? `${"OCN".repeat(3)}PLN${"OCN".repeat(4)}` : oceanRow
+    )),
+  });
+  const sourceCanvas = await page.locator("#mapCanvas").boundingBox();
+  const targetTabBox = await page.locator(`.document-tab[data-document-id="${targetTab.id}"]`).boundingBox();
+  assert.ok(sourceCanvas && targetTabBox);
+  await page.mouse.move(sourceCanvas.x + 3.5 * 20, sourceCanvas.y + 3.5 * 20);
+  await page.mouse.down();
+  await page.mouse.move(targetTabBox.x + targetTabBox.width / 2, targetTabBox.y + targetTabBox.height / 2);
+  await wait(1100);
+  assert.equal((await page.evaluate(() => window.__mapMakerTest.getTabs())).find((tab) => tab.active).id, targetTab.id);
+
+  const targetCanvas = await page.locator("#mapCanvas").boundingBox();
+  assert.ok(targetCanvas);
+  await page.mouse.move(targetCanvas.x + 4.5 * 20, targetCanvas.y + 4.5 * 20);
+  await page.mouse.up();
+  await page.locator("#selectionConfirmBtn").click();
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getCell(4, 4)), "PLN");
+  await page.evaluate((sourceId) => window.__mapMakerTest.activateTab(sourceId), sourceTab.id);
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getCell(3, 3)), "OCN");
+  await page.locator("#undoBtn").click();
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getCell(3, 3)), "PLN");
+  await page.evaluate((targetId) => window.__mapMakerTest.activateTab(targetId), targetTab.id);
+  await page.locator("#undoBtn").click();
+  assert.equal(await page.evaluate(() => window.__mapMakerTest.getCell(4, 4)), "OCN");
 
   console.log("tabs-e2e: all tests passed");
 } finally {
